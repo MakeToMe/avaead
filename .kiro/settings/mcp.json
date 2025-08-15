@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "supabase-rarcursos": {
+      "command": "uvx",
+      "args": ["mcp-server-supabase@latest"],
+      "env": {
+        "SUPABASE_URL": "https://studio.rardevops.com",
+        "SUPABASE_SERVICE_ROLE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.ewogICJyb2xlIjogInNlcnZpY2Vfcm9sZSIsCiAgImlzcyI6ICJzdXBhYmFzZSIsCiAgImlhdCI6IDE3MzQ4MzY0MDAsCiAgImV4cCI6IDE4OTI2MDI4MDAKfQ.VmlSWOEpE77ZfOcQSjoP-1Ty4eWUgybz_K9AUvdsY70",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "mcp_supabase_mcp_server_list_tables",
+        "mcp_supabase_mcp_server_execute_sql",
+        "mcp_supabase_mcp_server_list_migrations"
+      ]
+    }
+  }
+}
