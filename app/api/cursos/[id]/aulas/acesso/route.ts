@@ -1,17 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const client = await pool.connect();
+  
   try {
-    const cursoId = params.id;
+    const { id: cursoId } = await params;
     const { searchParams } = new URL(request.url);
     const alunoId = searchParams.get('aluno_id');
 
@@ -23,50 +30,68 @@ export async function GET(
     }
 
     // Verificar se o aluno está matriculado no curso
-    const { data: matricula, error: matriculaError } = await supabase
-      .from('matriculas')
-      .select('id, tipo_acesso, data_matricula')
-      .eq('curso_id', cursoId)
-      .eq('aluno_id', alunoId)
-      .eq('status', 'ativa')
-      .single();
+    const matriculaQuery = `
+      SELECT id, tipo_acesso, data_matricula 
+      FROM rarcursos.matriculas 
+      WHERE curso_id = $1 AND aluno_id = $2 AND status = 'ativa'
+    `;
+    
+    const matriculaResult = await client.query(matriculaQuery, [cursoId, alunoId]);
 
-    if (matriculaError || !matricula) {
+    if (matriculaResult.rows.length === 0) {
       return NextResponse.json(
         { error: 'Aluno não está matriculado neste curso' },
         { status: 403 }
       );
     }
 
-    // Buscar todas as aulas do curso
-    const { data: aulas, error: aulasError } = await supabase
-      .from('aulas')
-      .select('id, titulo, descricao, duracao, privada, media_url, ativo')
-      .eq('curso_id', cursoId)
-      .eq('ativo', true)
-      .order('titulo');
+    const matricula = matriculaResult.rows[0];
 
-    if (aulasError) {
-      console.error('Erro ao buscar aulas:', aulasError);
-      return NextResponse.json(
-        { error: 'Erro ao buscar aulas do curso' },
-        { status: 500 }
-      );
+    // Buscar todas as aulas do curso
+    const aulasQuery = `
+      SELECT 
+        a.id, 
+        a.titulo, 
+        a.descricao, 
+        a.duracao, 
+        a.privada, 
+        a.media_url, 
+        a.ativo
+      FROM rarcursos.aulas a
+      JOIN rarcursos.modulos m ON a.modulo_id = m.id
+      WHERE m.curso_id = $1 AND a.ativo = true
+      ORDER BY a.titulo
+    `;
+
+    const aulasResult = await client.query(aulasQuery, [cursoId]);
+    const aulas = aulasResult.rows;
+
+    if (aulas.length === 0) {
+      return NextResponse.json({
+        aulas: [],
+        tipo_acesso: { tipo: 'sem_aulas', descricao: 'Curso sem aulas disponíveis' },
+        matricula,
+        estatisticas: { total_aulas: 0, aulas_acessiveis: 0 }
+      });
     }
 
     // Buscar permissões específicas do aluno
-    const { data: permissoes } = await supabase
-      .from('aula_permissoes')
-      .select('aula_id, tipo_permissao, criado_em')
-      .eq('aluno_id', alunoId)
-      .in('aula_id', aulas?.map(a => a.id) || []);
+    const aulasIds = aulas.map(a => a.id);
+    const permissoesQuery = `
+      SELECT aula_id, tipo_permissao, criado_em 
+      FROM rarcursos.aula_permissoes 
+      WHERE aluno_id = $1 AND aula_id = ANY($2::uuid[])
+    `;
+
+    const permissoesResult = await client.query(permissoesQuery, [alunoId, aulasIds]);
+    const permissoes = permissoesResult.rows;
 
     const permissoesMap = new Map(
       permissoes?.map(p => [p.aula_id, p]) || []
     );
 
     // Processar cada aula para determinar acesso
-    const aulasComAcesso = (aulas || []).map(aula => {
+    const aulasComAcesso = aulas.map(aula => {
       let pode_assistir = false;
       let tipo_acesso: string | undefined;
       let motivo: string | undefined;
@@ -164,5 +189,7 @@ export async function GET(
       { error: 'Erro interno do servidor' },
       { status: 500 }
     );
+  } finally {
+    client.release();
   }
 }

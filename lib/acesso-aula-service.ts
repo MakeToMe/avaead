@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 import type { 
   AcessoAulaResult, 
   Aula, 
@@ -6,21 +6,23 @@ import type {
   AulaPermissao 
 } from './types/aulas-privadas';
 
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
+
 /**
  * Serviço para verificação de acesso a aulas privadas
  * Implementa a lógica híbrida de convites (curso completo vs aulas específicas)
  */
 export class AcessoAulaService {
-  private supabase;
-
   constructor() {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      {
-        db: { schema: 'rarcursos' }
-      }
-    );
+    // Não precisa mais de inicialização do Supabase
   }
 
   /**
@@ -129,18 +131,23 @@ export class AcessoAulaService {
    * @returns Dados da aula ou null se não encontrada
    */
   private async getAula(aulaId: string): Promise<Aula | null> {
-    const { data, error } = await this.supabase
-      .from('aulas')
-      .select('*')
-      .eq('id', aulaId)
-      .single();
-
-    if (error) {
+    const client = await pool.connect();
+    
+    try {
+      const query = 'SELECT * FROM rarcursos.aulas WHERE id = $1';
+      const result = await client.query(query, [aulaId]);
+      
+      if (result.rows.length === 0) {
+        return null;
+      }
+      
+      return result.rows[0];
+    } catch (error) {
       console.error('Erro ao buscar aula:', error);
       return null;
+    } finally {
+      client.release();
     }
-
-    return data;
   }
 
   /**
@@ -150,23 +157,26 @@ export class AcessoAulaService {
    * @returns Dados da matrícula ou null se não encontrada
    */
   private async getMatricula(cursoId: string, alunoId: string): Promise<Matricula | null> {
-    const { data, error } = await this.supabase
-      .from('matriculas')
-      .select('*')
-      .eq('curso_id', cursoId)
-      .eq('aluno_id', alunoId)
-      .eq('status', 'ativa')
-      .single();
-
-    if (error) {
-      // Não logar erro se for apenas "não encontrado"
-      if (error.code !== 'PGRST116') {
-        console.error('Erro ao buscar matrícula:', error);
+    const client = await pool.connect();
+    
+    try {
+      const query = `
+        SELECT * FROM rarcursos.matriculas 
+        WHERE curso_id = $1 AND aluno_id = $2 AND status = 'ativa'
+      `;
+      const result = await client.query(query, [cursoId, alunoId]);
+      
+      if (result.rows.length === 0) {
+        return null;
       }
+      
+      return result.rows[0];
+    } catch (error) {
+      console.error('Erro ao buscar matrícula:', error);
       return null;
+    } finally {
+      client.release();
     }
-
-    return data;
   }
 
   /**
@@ -176,22 +186,26 @@ export class AcessoAulaService {
    * @returns Dados da permissão ou null se não encontrada
    */
   private async getAulaPermissao(aulaId: string, alunoId: string): Promise<AulaPermissao | null> {
-    const { data, error } = await this.supabase
-      .from('aula_permissoes')
-      .select('*')
-      .eq('aula_id', aulaId)
-      .eq('aluno_id', alunoId)
-      .single();
-
-    if (error) {
-      // Não logar erro se for apenas "não encontrado"
-      if (error.code !== 'PGRST116') {
-        console.error('Erro ao buscar permissão de aula:', error);
+    const client = await pool.connect();
+    
+    try {
+      const query = `
+        SELECT * FROM rarcursos.aula_permissoes 
+        WHERE aula_id = $1 AND aluno_id = $2
+      `;
+      const result = await client.query(query, [aulaId, alunoId]);
+      
+      if (result.rows.length === 0) {
+        return null;
       }
+      
+      return result.rows[0];
+    } catch (error) {
+      console.error('Erro ao buscar permissão de aula:', error);
       return null;
+    } finally {
+      client.release();
     }
-
-    return data;
   }
 
   /**
@@ -200,19 +214,24 @@ export class AcessoAulaService {
    * @returns Array de aulas do curso
    */
   private async getAulasCurso(cursoId: string): Promise<Aula[]> {
-    const { data, error } = await this.supabase
-      .from('aulas')
-      .select('*')
-      .eq('curso_id', cursoId)
-      .eq('ativo', true)
-      .order('criado_em', { ascending: true });
-
-    if (error) {
+    const client = await pool.connect();
+    
+    try {
+      const query = `
+        SELECT a.* FROM rarcursos.aulas a
+        JOIN rarcursos.modulos m ON a.modulo_id = m.id
+        WHERE m.curso_id = $1 AND a.ativo = true
+        ORDER BY a.criado_em ASC
+      `;
+      const result = await client.query(query, [cursoId]);
+      
+      return result.rows;
+    } catch (error) {
       console.error('Erro ao buscar aulas do curso:', error);
       return [];
+    } finally {
+      client.release();
     }
-
-    return data || [];
   }
 
   /**
@@ -222,23 +241,23 @@ export class AcessoAulaService {
    * @returns true se for instrutor, false caso contrário
    */
   async isInstrutor(cursoId: string, usuarioId: string): Promise<boolean> {
+    const client = await pool.connect();
+    
     try {
-      const { data, error } = await this.supabase
-        .from('cursos')
-        .select('instrutor_id')
-        .eq('id', cursoId)
-        .single();
+      const query = 'SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1';
+      const result = await client.query(query, [cursoId]);
 
-      if (error) {
-        console.error('Erro ao verificar instrutor:', error);
+      if (result.rows.length === 0) {
         return false;
       }
 
-      return data?.instrutor_id === usuarioId;
+      return result.rows[0].instrutor_id === usuarioId;
 
     } catch (error) {
       console.error('Erro ao verificar instrutor:', error);
       return false;
+    } finally {
+      client.release();
     }
   }
 
@@ -259,30 +278,33 @@ export class AcessoAulaService {
    * @returns Objeto com alunos agrupados por tipo
    */
   async getAlunosPorTipoAcesso(cursoId: string) {
+    const client = await pool.connect();
+    
     try {
-      const { data, error } = await this.supabase
-        .from('matriculas')
-        .select(`
-          *,
-          users:aluno_id (
-            uid,
-            nome,
-            email
-          )
-        `)
-        .eq('curso_id', cursoId)
-        .eq('status', 'ativa');
+      const query = `
+        SELECT 
+          m.*,
+          u.uid,
+          u.nome,
+          u.email
+        FROM rarcursos.matriculas m
+        JOIN rarcursos.users u ON m.aluno_id = u.uid
+        WHERE m.curso_id = $1 AND m.status = 'ativa'
+      `;
+      
+      const result = await client.query(query, [cursoId]);
+      
+      const data = result.rows.map(row => ({
+        ...row,
+        users: {
+          uid: row.uid,
+          nome: row.nome,
+          email: row.email
+        }
+      }));
 
-      if (error) {
-        console.error('Erro ao buscar alunos do curso:', error);
-        return {
-          matriculados: [],
-          convidados_curso: []
-        };
-      }
-
-      const matriculados = data?.filter(m => m.tipo_acesso === 'matriculado') || [];
-      const convidados_curso = data?.filter(m => m.tipo_acesso === 'convidado_curso') || [];
+      const matriculados = data.filter(m => m.tipo_acesso === 'matriculado');
+      const convidados_curso = data.filter(m => m.tipo_acesso === 'convidado_curso');
 
       return {
         matriculados,
@@ -295,6 +317,8 @@ export class AcessoAulaService {
         matriculados: [],
         convidados_curso: []
       };
+    } finally {
+      client.release();
     }
   }
 }

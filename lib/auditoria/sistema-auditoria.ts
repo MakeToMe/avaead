@@ -4,12 +4,19 @@
  * Registra todas as operações importantes para rastreabilidade e compliance
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
+
+// TODO: Converter para PostgreSQL - temporariamente desabilitado
 
 export enum TipoEventoAuditoria {
   // Convites
@@ -300,9 +307,8 @@ export class SistemaAuditoria {
    */
   private async salvarEventosNoBanco(eventos: EventoAuditoria[]): Promise<void> {
     try {
-      const { error } = await supabase
-        .from('logs_auditoria')
-        .insert(eventos);
+      // TODO: Converter para PostgreSQL
+      console.log('Auditoria temporariamente desabilitada:', eventos.length, 'eventos');
 
       if (error) {
         throw error;

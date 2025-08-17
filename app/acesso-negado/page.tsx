@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Shield, Lock, AlertTriangle, ArrowLeft, Mail, HelpCircle } from 'lucide-react';
 
-export default function AcessoNegadoPage() {
+function AcessoNegadoContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   
@@ -235,5 +235,20 @@ export default function AcessoNegadoPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function AcessoNegadoPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
+          <p className="mt-2 text-gray-600">Carregando...</p>
+        </div>
+      </div>
+    }>
+      <AcessoNegadoContent />
+    </Suspense>
   );
 }

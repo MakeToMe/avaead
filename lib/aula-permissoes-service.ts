@@ -1,21 +1,23 @@
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 import type { AulaPermissao, Usuario } from './types/aulas-privadas';
+
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 /**
  * Serviço para gerenciamento de permissões específicas de aulas
  * Permite conceder/remover permissões granulares para aulas privadas
  */
 export class AulaPermissoesService {
-  private supabase;
-
   constructor() {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      {
-        db: { schema: 'rarcursos' }
-      }
-    );
+    // Não precisa mais de inicialização do Supabase
   }
 
   /**
@@ -26,20 +28,27 @@ export class AulaPermissoesService {
    * @returns Resultado da operação
    */
   async concederPermissao(aulaId: string, alunoId: string, instrutorId: string) {
+    const client = await pool.connect();
+    
     try {
       // 1. Verificar se a aula existe e é privada
-      const { data: aula, error: aulaError } = await this.supabase
-        .from('aulas')
-        .select('id, titulo, privada, curso_id')
-        .eq('id', aulaId)
-        .single();
+      const aulaQuery = `
+        SELECT a.id, a.titulo, a.privada, m.curso_id
+        FROM rarcursos.aulas a
+        JOIN rarcursos.modulos m ON a.modulo_id = m.id
+        WHERE a.id = $1
+      `;
+      
+      const aulaResult = await client.query(aulaQuery, [aulaId]);
 
-      if (aulaError || !aula) {
+      if (aulaResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aula não encontrada'
         };
       }
+
+      const aula = aulaResult.rows[0];
 
       if (!aula.privada) {
         return {
@@ -58,20 +67,22 @@ export class AulaPermissoesService {
       }
 
       // 3. Verificar se o aluno está matriculado no curso
-      const { data: matricula } = await this.supabase
-        .from('matriculas')
-        .select('id, tipo_acesso')
-        .eq('curso_id', aula.curso_id)
-        .eq('aluno_id', alunoId)
-        .eq('status', 'ativa')
-        .single();
+      const matriculaQuery = `
+        SELECT id, tipo_acesso 
+        FROM rarcursos.matriculas 
+        WHERE curso_id = $1 AND aluno_id = $2 AND status = 'ativa'
+      `;
+      
+      const matriculaResult = await client.query(matriculaQuery, [aula.curso_id, alunoId]);
 
-      if (!matricula) {
+      if (matriculaResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aluno não está matriculado neste curso'
         };
       }
+
+      const matricula = matriculaResult.rows[0];
 
       // 4. Verificar se já tem acesso total (convidado_curso)
       if (matricula.tipo_acesso === 'convidado_curso') {
@@ -82,14 +93,14 @@ export class AulaPermissoesService {
       }
 
       // 5. Verificar se já tem permissão específica
-      const { data: permissaoExistente } = await this.supabase
-        .from('aula_permissoes')
-        .select('id')
-        .eq('aula_id', aulaId)
-        .eq('aluno_id', alunoId)
-        .single();
+      const permissaoExistenteQuery = `
+        SELECT id FROM rarcursos.aula_permissoes 
+        WHERE aula_id = $1 AND aluno_id = $2
+      `;
+      
+      const permissaoExistenteResult = await client.query(permissaoExistenteQuery, [aulaId, alunoId]);
 
-      if (permissaoExistente) {
+      if (permissaoExistenteResult.rows.length > 0) {
         return {
           success: false,
           error: 'Aluno já tem permissão para esta aula'
@@ -97,28 +108,23 @@ export class AulaPermissoesService {
       }
 
       // 6. Conceder permissão
-      const { data: novaPermissao, error: permissaoError } = await this.supabase
-        .from('aula_permissoes')
-        .insert({
-          aula_id: aulaId,
-          aluno_id: alunoId,
-          concedida_por: instrutorId,
-          tipo_permissao: 'convite_especifico'
-        })
-        .select()
-        .single();
-
-      if (permissaoError) {
-        console.error('Erro ao conceder permissão:', permissaoError);
-        return {
-          success: false,
-          error: 'Erro ao salvar permissão no banco de dados'
-        };
-      }
+      const insertPermissaoQuery = `
+        INSERT INTO rarcursos.aula_permissoes (
+          aula_id, aluno_id, concedida_por, tipo_permissao, criado_em
+        ) VALUES ($1, $2, $3, $4, NOW())
+        RETURNING *
+      `;
+      
+      const novaPermissaoResult = await client.query(insertPermissaoQuery, [
+        aulaId,
+        alunoId,
+        instrutorId,
+        'convite_especifico'
+      ]);
 
       return {
         success: true,
-        data: novaPermissao
+        data: novaPermissaoResult.rows[0]
       };
 
     } catch (error) {
@@ -127,6 +133,8 @@ export class AulaPermissoesService {
         success: false,
         error: 'Erro interno do servidor'
       };
+    } finally {
+      client.release();
     }
   }
 
@@ -138,20 +146,27 @@ export class AulaPermissoesService {
    * @returns Resultado da operação
    */
   async removerPermissao(aulaId: string, alunoId: string, instrutorId: string) {
+    const client = await pool.connect();
+    
     try {
       // 1. Verificar se a aula existe
-      const { data: aula } = await this.supabase
-        .from('aulas')
-        .select('id, titulo, curso_id')
-        .eq('id', aulaId)
-        .single();
+      const aulaQuery = `
+        SELECT a.id, a.titulo, m.curso_id
+        FROM rarcursos.aulas a
+        JOIN rarcursos.modulos m ON a.modulo_id = m.id
+        WHERE a.id = $1
+      `;
+      
+      const aulaResult = await client.query(aulaQuery, [aulaId]);
 
-      if (!aula) {
+      if (aulaResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aula não encontrada'
         };
       }
+
+      const aula = aulaResult.rows[0];
 
       // 2. Verificar se o usuário é instrutor do curso
       const isInstrutor = await this.verificarInstrutor(aula.curso_id, instrutorId);
@@ -163,34 +178,29 @@ export class AulaPermissoesService {
       }
 
       // 3. Verificar se existe permissão específica
-      const { data: permissao } = await this.supabase
-        .from('aula_permissoes')
-        .select('*')
-        .eq('aula_id', aulaId)
-        .eq('aluno_id', alunoId)
-        .eq('tipo_permissao', 'convite_especifico')
-        .single();
+      const permissaoQuery = `
+        SELECT * FROM rarcursos.aula_permissoes 
+        WHERE aula_id = $1 AND aluno_id = $2 AND tipo_permissao = 'convite_especifico'
+      `;
+      
+      const permissaoResult = await client.query(permissaoQuery, [aulaId, alunoId]);
 
-      if (!permissao) {
+      if (permissaoResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aluno não possui permissão específica para esta aula'
         };
       }
 
-      // 4. Remover permissão
-      const { error: deleteError } = await this.supabase
-        .from('aula_permissoes')
-        .delete()
-        .eq('id', permissao.id);
+      const permissao = permissaoResult.rows[0];
 
-      if (deleteError) {
-        console.error('Erro ao remover permissão:', deleteError);
-        return {
-          success: false,
-          error: 'Erro ao remover permissão do banco de dados'
-        };
-      }
+      // 4. Remover permissão
+      const deleteQuery = `
+        DELETE FROM rarcursos.aula_permissoes 
+        WHERE id = $1
+      `;
+      
+      await client.query(deleteQuery, [permissao.id]);
 
       return {
         success: true,
@@ -207,6 +217,8 @@ export class AulaPermissoesService {
         success: false,
         error: 'Erro interno do servidor'
       };
+    } finally {
+      client.release();
     }
   }
 
@@ -217,20 +229,27 @@ export class AulaPermissoesService {
    * @returns Lista de permissões
    */
   async listarPermissoesAula(aulaId: string, instrutorId: string) {
+    const client = await pool.connect();
+    
     try {
       // 1. Verificar se a aula existe
-      const { data: aula } = await this.supabase
-        .from('aulas')
-        .select('id, titulo, privada, curso_id')
-        .eq('id', aulaId)
-        .single();
+      const aulaQuery = `
+        SELECT a.id, a.titulo, a.privada, m.curso_id
+        FROM rarcursos.aulas a
+        JOIN rarcursos.modulos m ON a.modulo_id = m.id
+        WHERE a.id = $1
+      `;
+      
+      const aulaResult = await client.query(aulaQuery, [aulaId]);
 
-      if (!aula) {
+      if (aulaResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aula não encontrada'
         };
       }
+
+      const aula = aulaResult.rows[0];
 
       // 2. Verificar se o usuário é instrutor do curso
       const isInstrutor = await this.verificarInstrutor(aula.curso_id, instrutorId);
@@ -242,68 +261,104 @@ export class AulaPermissoesService {
       }
 
       // 3. Buscar alunos com acesso total (convidados do curso)
-      const { data: convidadosCurso } = await this.supabase
-        .from('matriculas')
-        .select(`
-          id,
-          aluno_id,
-          tipo_acesso,
-          data_matricula,
-          users:aluno_id (
-            uid,
-            nome,
-            email
-          )
-        `)
-        .eq('curso_id', aula.curso_id)
-        .eq('tipo_acesso', 'convidado_curso')
-        .eq('status', 'ativa');
+      const convidadosQuery = `
+        SELECT 
+          m.id,
+          m.aluno_id,
+          m.tipo_acesso,
+          m.data_matricula,
+          u.uid,
+          u.nome,
+          u.email
+        FROM rarcursos.matriculas m
+        JOIN rarcursos.users u ON m.aluno_id = u.uid
+        WHERE m.curso_id = $1 AND m.tipo_acesso = 'convidado_curso' AND m.status = 'ativa'
+      `;
+      
+      const convidadosResult = await client.query(convidadosQuery, [aula.curso_id]);
+      const convidadosCurso = convidadosResult.rows.map(row => ({
+        id: row.id,
+        aluno_id: row.aluno_id,
+        tipo_acesso: row.tipo_acesso,
+        data_matricula: row.data_matricula,
+        users: {
+          uid: row.uid,
+          nome: row.nome,
+          email: row.email
+        }
+      }));
 
       // 4. Buscar permissões específicas para esta aula
-      const { data: permissoesEspecificas } = await this.supabase
-        .from('aula_permissoes')
-        .select(`
-          id,
-          aluno_id,
-          tipo_permissao,
-          criado_em,
-          concedida_por,
-          users:aluno_id (
-            uid,
-            nome,
-            email
-          ),
-          instrutor:concedida_por (
-            uid,
-            nome
-          )
-        `)
-        .eq('aula_id', aulaId);
+      const permissoesQuery = `
+        SELECT 
+          ap.id,
+          ap.aluno_id,
+          ap.tipo_permissao,
+          ap.criado_em,
+          ap.concedida_por,
+          u.uid as aluno_uid,
+          u.nome as aluno_nome,
+          u.email as aluno_email,
+          i.uid as instrutor_uid,
+          i.nome as instrutor_nome
+        FROM rarcursos.aula_permissoes ap
+        JOIN rarcursos.users u ON ap.aluno_id = u.uid
+        LEFT JOIN rarcursos.users i ON ap.concedida_por = i.uid
+        WHERE ap.aula_id = $1
+      `;
+      
+      const permissoesResult = await client.query(permissoesQuery, [aulaId]);
+      const permissoesEspecificas = permissoesResult.rows.map(row => ({
+        id: row.id,
+        aluno_id: row.aluno_id,
+        tipo_permissao: row.tipo_permissao,
+        criado_em: row.criado_em,
+        concedida_por: row.concedida_por,
+        users: {
+          uid: row.aluno_uid,
+          nome: row.aluno_nome,
+          email: row.aluno_email
+        },
+        instrutor: {
+          uid: row.instrutor_uid,
+          nome: row.instrutor_nome
+        }
+      }));
 
       // 5. Buscar alunos matriculados sem acesso
-      const { data: matriculados } = await this.supabase
-        .from('matriculas')
-        .select(`
-          id,
-          aluno_id,
-          tipo_acesso,
-          data_matricula,
-          users:aluno_id (
-            uid,
-            nome,
-            email
-          )
-        `)
-        .eq('curso_id', aula.curso_id)
-        .eq('tipo_acesso', 'matriculado')
-        .eq('status', 'ativa');
+      const matriculadosQuery = `
+        SELECT 
+          m.id,
+          m.aluno_id,
+          m.tipo_acesso,
+          m.data_matricula,
+          u.uid,
+          u.nome,
+          u.email
+        FROM rarcursos.matriculas m
+        JOIN rarcursos.users u ON m.aluno_id = u.uid
+        WHERE m.curso_id = $1 AND m.tipo_acesso = 'matriculado' AND m.status = 'ativa'
+      `;
+      
+      const matriculadosResult = await client.query(matriculadosQuery, [aula.curso_id]);
+      const matriculados = matriculadosResult.rows.map(row => ({
+        id: row.id,
+        aluno_id: row.aluno_id,
+        tipo_acesso: row.tipo_acesso,
+        data_matricula: row.data_matricula,
+        users: {
+          uid: row.uid,
+          nome: row.nome,
+          email: row.email
+        }
+      }));
 
       // Filtrar matriculados que não têm permissão específica
       const alunosComPermissaoEspecifica = new Set(
-        (permissoesEspecificas || []).map(p => p.aluno_id)
+        permissoesEspecificas.map(p => p.aluno_id)
       );
 
-      const matriculadosSemAcesso = (matriculados || []).filter(
+      const matriculadosSemAcesso = matriculados.filter(
         m => !alunosComPermissaoEspecifica.has(m.aluno_id)
       );
 
@@ -312,13 +367,13 @@ export class AulaPermissoesService {
         data: {
           aula: aula,
           resumo: {
-            total_com_acesso: (convidadosCurso?.length || 0) + (permissoesEspecificas?.length || 0),
-            convidados_curso: convidadosCurso?.length || 0,
-            permissoes_especificas: permissoesEspecificas?.length || 0,
+            total_com_acesso: convidadosCurso.length + permissoesEspecificas.length,
+            convidados_curso: convidadosCurso.length,
+            permissoes_especificas: permissoesEspecificas.length,
             matriculados_sem_acesso: matriculadosSemAcesso.length
           },
-          convidados_curso: convidadosCurso || [],
-          permissoes_especificas: permissoesEspecificas || [],
+          convidados_curso: convidadosCurso,
+          permissoes_especificas: permissoesEspecificas,
           matriculados_sem_acesso: matriculadosSemAcesso
         }
       };
@@ -329,6 +384,8 @@ export class AulaPermissoesService {
         success: false,
         error: 'Erro interno do servidor'
       };
+    } finally {
+      client.release();
     }
   }
 
@@ -340,6 +397,8 @@ export class AulaPermissoesService {
    * @returns Lista de permissões do aluno
    */
   async listarPermissoesAluno(cursoId: string, alunoId: string, instrutorId: string) {
+    const client = await pool.connect();
+    
     try {
       // 1. Verificar se o usuário é instrutor do curso
       const isInstrutor = await this.verificarInstrutor(cursoId, instrutorId);
@@ -351,61 +410,85 @@ export class AulaPermissoesService {
       }
 
       // 2. Verificar se o aluno está matriculado
-      const { data: matricula } = await this.supabase
-        .from('matriculas')
-        .select(`
-          id,
-          tipo_acesso,
-          data_matricula,
-          users:aluno_id (
-            uid,
-            nome,
-            email
-          )
-        `)
-        .eq('curso_id', cursoId)
-        .eq('aluno_id', alunoId)
-        .eq('status', 'ativa')
-        .single();
+      const matriculaQuery = `
+        SELECT 
+          m.id,
+          m.tipo_acesso,
+          m.data_matricula,
+          u.uid,
+          u.nome,
+          u.email
+        FROM rarcursos.matriculas m
+        JOIN rarcursos.users u ON m.aluno_id = u.uid
+        WHERE m.curso_id = $1 AND m.aluno_id = $2 AND m.status = 'ativa'
+      `;
+      
+      const matriculaResult = await client.query(matriculaQuery, [cursoId, alunoId]);
 
-      if (!matricula) {
+      if (matriculaResult.rows.length === 0) {
         return {
           success: false,
           error: 'Aluno não está matriculado neste curso'
         };
       }
 
-      // 3. Buscar permissões específicas do aluno
-      const { data: permissoes } = await this.supabase
-        .from('aula_permissoes')
-        .select(`
-          id,
-          aula_id,
-          tipo_permissao,
-          criado_em,
-          concedida_por,
-          aulas:aula_id (
-            id,
-            titulo,
-            descricao,
-            privada,
-            modulos:modulo_id (
-              id,
-              titulo
-            )
-          ),
-          instrutor:concedida_por (
-            uid,
-            nome
-          )
-        `)
-        .eq('aluno_id', alunoId)
-        .eq('tipo_permissao', 'convite_especifico');
+      const matriculaRow = matriculaResult.rows[0];
+      const matricula = {
+        id: matriculaRow.id,
+        tipo_acesso: matriculaRow.tipo_acesso,
+        data_matricula: matriculaRow.data_matricula,
+        users: {
+          uid: matriculaRow.uid,
+          nome: matriculaRow.nome,
+          email: matriculaRow.email
+        }
+      };
 
-      // Filtrar apenas aulas do curso específico
-      const permissoesDoCurso = (permissoes || []).filter(
-        p => p.aulas?.curso_id === cursoId
-      );
+      // 3. Buscar permissões específicas do aluno no curso
+      const permissoesQuery = `
+        SELECT 
+          ap.id,
+          ap.aula_id,
+          ap.tipo_permissao,
+          ap.criado_em,
+          ap.concedida_por,
+          a.id as aula_id_full,
+          a.titulo as aula_titulo,
+          a.descricao as aula_descricao,
+          a.privada as aula_privada,
+          mod.id as modulo_id,
+          mod.titulo as modulo_titulo,
+          i.uid as instrutor_uid,
+          i.nome as instrutor_nome
+        FROM rarcursos.aula_permissoes ap
+        JOIN rarcursos.aulas a ON ap.aula_id = a.id
+        JOIN rarcursos.modulos mod ON a.modulo_id = mod.id
+        LEFT JOIN rarcursos.users i ON ap.concedida_por = i.uid
+        WHERE ap.aluno_id = $1 AND ap.tipo_permissao = 'convite_especifico' AND mod.curso_id = $2
+      `;
+      
+      const permissoesResult = await client.query(permissoesQuery, [alunoId, cursoId]);
+      const permissoesDoCurso = permissoesResult.rows.map(row => ({
+        id: row.id,
+        aula_id: row.aula_id,
+        tipo_permissao: row.tipo_permissao,
+        criado_em: row.criado_em,
+        concedida_por: row.concedida_por,
+        aulas: {
+          id: row.aula_id_full,
+          titulo: row.aula_titulo,
+          descricao: row.aula_descricao,
+          privada: row.aula_privada,
+          modulos: {
+            id: row.modulo_id,
+            titulo: row.modulo_titulo
+          }
+        },
+        instrutor: {
+          uid: row.instrutor_uid,
+          nome: row.instrutor_nome
+        }
+      }));
 
       return {
         success: true,
@@ -424,6 +507,8 @@ export class AulaPermissoesService {
         success: false,
         error: 'Erro interno do servidor'
       };
+    } finally {
+      client.release();
     }
   }
 
@@ -434,14 +519,25 @@ export class AulaPermissoesService {
    * @returns true se for instrutor
    */
   private async verificarInstrutor(cursoId: string, usuarioId: string): Promise<boolean> {
-    const { data, error } = await this.supabase
-      .from('cursos')
-      .select('instrutor_id')
-      .eq('id', cursoId)
-      .single();
-
-    if (error) return false;
-    return data?.instrutor_id === usuarioId;
+    const client = await pool.connect();
+    
+    try {
+      const query = `
+        SELECT instrutor_id FROM rarcursos.cursos 
+        WHERE id = $1
+      `;
+      
+      const result = await client.query(query, [cursoId]);
+      
+      if (result.rows.length === 0) return false;
+      return result.rows[0].instrutor_id === usuarioId;
+      
+    } catch (error) {
+      console.error('Erro ao verificar instrutor:', error);
+      return false;
+    } finally {
+      client.release();
+    }
   }
 }
 

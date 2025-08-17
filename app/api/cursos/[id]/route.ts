@@ -1,65 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const client = await pool.connect();
+  
   try {
-    const cursoId = params.id;
+    const { id: cursoId } = await params;
 
     // Buscar informações do curso com dados do instrutor
-    const { data: curso, error } = await supabase
-      .from('cursos')
-      .select(`
-        id,
-        titulo,
-        descricao,
-        ativo,
-        criado_em,
-        instrutor_id,
-        users!cursos_instrutor_id_fkey (
-          nome,
-          email
-        )
-      `)
-      .eq('id', cursoId)
-      .eq('ativo', true)
-      .single();
+    const cursoQuery = `
+      SELECT 
+        c.id,
+        c.titulo,
+        c.descricao,
+        c.ativo,
+        c.criado_em,
+        c.instrutor_id,
+        u.nome as instrutor_nome,
+        u.email as instrutor_email
+      FROM rarcursos.cursos c
+      LEFT JOIN rarcursos.users u ON c.instrutor_id = u.uid
+      WHERE c.id = $1 AND c.ativo = true
+    `;
 
-    if (error || !curso) {
+    const cursoResult = await client.query(cursoQuery, [cursoId]);
+
+    if (cursoResult.rows.length === 0) {
       return NextResponse.json(
         { error: 'Curso não encontrado' },
         { status: 404 }
       );
     }
 
-    // Buscar estatísticas básicas do curso
-    const { data: estatisticas } = await supabase
-      .from('aulas')
-      .select('id, privada, ativo')
-      .eq('curso_id', cursoId)
-      .eq('ativo', true);
+    const curso = cursoResult.rows[0];
 
-    const totalAulas = estatisticas?.length || 0;
-    const aulasPublicas = estatisticas?.filter(a => !a.privada).length || 0;
-    const aulasPrivadas = estatisticas?.filter(a => a.privada).length || 0;
+    // Buscar estatísticas básicas do curso
+    const estatisticasQuery = `
+      SELECT 
+        a.id, 
+        a.privada, 
+        a.ativo
+      FROM rarcursos.aulas a
+      JOIN rarcursos.modulos m ON a.modulo_id = m.id
+      WHERE m.curso_id = $1 AND a.ativo = true
+    `;
+
+    const estatisticasResult = await client.query(estatisticasQuery, [cursoId]);
+    const estatisticas = estatisticasResult.rows;
+
+    const totalAulas = estatisticas.length;
+    const aulasPublicas = estatisticas.filter(a => !a.privada).length;
+    const aulasPrivadas = estatisticas.filter(a => a.privada).length;
 
     // Buscar total de alunos matriculados
-    const { data: matriculas } = await supabase
-      .from('matriculas')
-      .select('id')
-      .eq('curso_id', cursoId)
-      .eq('status', 'ativa');
+    const matriculasQuery = `
+      SELECT COUNT(*) as total
+      FROM rarcursos.matriculas 
+      WHERE curso_id = $1 AND status = 'ativa'
+    `;
 
-    const totalAlunos = matriculas?.length || 0;
-
-    const instrutor = curso.users as any;
+    const matriculasResult = await client.query(matriculasQuery, [cursoId]);
+    const totalAlunos = parseInt(matriculasResult.rows[0].total) || 0;
 
     return NextResponse.json({
       id: curso.id,
@@ -68,8 +82,8 @@ export async function GET(
       ativo: curso.ativo,
       criado_em: curso.criado_em,
       instrutor_id: curso.instrutor_id,
-      instrutor_nome: instrutor?.nome,
-      instrutor_email: instrutor?.email,
+      instrutor_nome: curso.instrutor_nome,
+      instrutor_email: curso.instrutor_email,
       estatisticas: {
         total_aulas: totalAulas,
         aulas_publicas: aulasPublicas,
@@ -84,5 +98,7 @@ export async function GET(
       { error: 'Erro interno do servidor' },
       { status: 500 }
     );
+  } finally {
+    client.release();
   }
 }

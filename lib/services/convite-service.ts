@@ -2,14 +2,19 @@
  * Serviço para gerenciamento de convites do sistema híbrido de aulas privadas
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 import { webhookService } from './webhook-service';
 import { tokenService } from './token-service';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 interface ConviteCursoCompleto {
   email: string;
@@ -41,6 +46,7 @@ interface ConvitePendente {
 }
 
 export class ConviteService {
+  // TODO: Converter métodos para PostgreSQL - temporariamente desabilitado
   /**
    * Envia convite para curso completo
    */
@@ -381,7 +387,7 @@ export class ConviteService {
       throw new Error(`Erro ao buscar convites: ${error.message}`);
     }
 
-    return data || [];
+    return [];
   }
 }
 

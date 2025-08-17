@@ -1,42 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const client = await pool.connect();
+  
   try {
-    const cursoId = params.id;
+    const { id: cursoId } = await params;
     const { searchParams } = new URL(request.url);
     const apenasPrivadas = searchParams.get('apenas_privadas') === 'true';
 
     // Construir query baseada nos filtros
-    let query = supabase
-      .from('aulas')
-      .select('id, titulo, descricao, duracao, privada, ativo')
-      .eq('curso_id', cursoId)
-      .eq('ativo', true)
-      .order('titulo');
+    let aulasQuery = `
+      SELECT 
+        a.id, 
+        a.titulo, 
+        a.descricao, 
+        a.duracao, 
+        a.privada, 
+        a.ativo
+      FROM rarcursos.aulas a
+      JOIN rarcursos.modulos m ON a.modulo_id = m.id
+      WHERE m.curso_id = $1 AND a.ativo = true
+    `;
+
+    const queryParams = [cursoId];
 
     // Filtrar apenas aulas privadas se solicitado
     if (apenasPrivadas) {
-      query = query.eq('privada', true);
+      aulasQuery += ' AND a.privada = true';
     }
 
-    const { data: aulas, error } = await query;
+    aulasQuery += ' ORDER BY a.titulo';
 
-    if (error) {
-      console.error('Erro ao buscar aulas:', error);
-      return NextResponse.json(
-        { error: 'Erro ao buscar aulas do curso' },
-        { status: 500 }
-      );
-    }
+    const result = await client.query(aulasQuery, queryParams);
+    const aulas = result.rows;
 
     return NextResponse.json({
       aulas: aulas || [],
@@ -52,5 +62,7 @@ export async function GET(
       { error: 'Erro interno do servidor' },
       { status: 500 }
     );
+  } finally {
+    client.release();
   }
 }
