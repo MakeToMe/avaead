@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Teste de Acesso à Aula</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Teste de Acesso à Aula</h1>
+    
+    <div>
+        <h3>Aula Privada: "AULA GRANDE TESTE"</h3>
+        <p>ID: 596cb650-9fc4-4053-af3e-fa3f78cb0d4c</p>
+        <button onclick="testarAcesso('596cb650-9fc4-4053-af3e-fa3f78cb0d4c', 'db7b5806-7d5a-40d7-b049-1e55c364bf3e')">
+            Testar como Admin
+        </button>
+        <button onclick="testarAcesso('596cb650-9fc4-4053-af3e-fa3f78cb0d4c', 'usuario-comum-123')">
+            Testar como Usuário Comum
+        </button>
+    </div>
+    
+    <div id="resultado"></div>
+
+    <script>
+        async function testarAcesso(aulaId, usuarioId) {
+            const resultadoDiv = document.getElementById('resultado');
+            resultadoDiv.innerHTML = '<p>Testando...</p>';
+            
+            try {
+                const response = await fetch(`/api/aulas/${aulaId}/verificar-acesso?usuario_id=${usuarioId}`);
+                const data = await response.json();
+                
+                const className = data.permitido ? 'success' : 'error';
+                const status = data.permitido ? '✅ ACESSO PERMITIDO' : '❌ ACESSO NEGADO';
+                
+                resultadoDiv.innerHTML = `
+                    <div class="result ${className}">
+                        <h4>${status}</h4>
+                        <p><strong>Usuário:</strong> ${usuarioId}</p>
+                        <p><strong>Motivo:</strong> ${data.motivo || 'N/A'}</p>
+                        <p><strong>Tipo de Acesso:</strong> ${data.tipo_acesso || 'N/A'}</p>
+                        <p><strong>Response completo:</strong></p>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    </div>
+                `;
+            } catch (error) {
+                resultadoDiv.innerHTML = `
+                    <div class="result error">
+                        <h4>❌ ERRO NA REQUISIÇÃO</h4>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -176,8 +176,8 @@ class ConviteService {
       token
     });
     
-    // 3. Enviar email
-    await this.emailService.enviarConviteCursoCompleto({
+    // 3. Enviar dados para webhook n8n
+    await this.webhookService.enviarConviteCursoCompleto({
       ...dados,
       token,
       link_aceitar: `${process.env.URL_BASE}/convites/aceitar/${token}`
@@ -200,8 +200,8 @@ class ConviteService {
     // 3. Buscar detalhes das aulas
     const aulas = await this.getAulasDetalhes(dados.aula_ids);
     
-    // 4. Enviar email
-    await this.emailService.enviarConviteAulasEspecificas({
+    // 4. Enviar dados para webhook n8n
+    await this.webhookService.enviarConviteAulasEspecificas({
       ...dados,
       aulas,
       token,

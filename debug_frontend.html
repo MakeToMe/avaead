@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Frontend</title>
+</head>
+<body>
+    <h1>Debug Frontend - Teste de APIs</h1>
+    
+    <div>
+        <h2>Teste 1: API de Permissões</h2>
+        <button onclick="testarPermissoes()">Testar Permissões</button>
+        <pre id="resultado-permissoes"></pre>
+    </div>
+    
+    <div>
+        <h2>Teste 2: Verificar Autenticação</h2>
+        <button onclick="verificarAuth()">Verificar Auth</button>
+        <pre id="resultado-auth"></pre>
+    </div>
+
+    <script>
+        async function testarPermissoes() {
+            const resultado = document.getElementById('resultado-permissoes');
+            resultado.textContent = 'Carregando...';
+            
+            try {
+                const response = await fetch('/api/aulas/5d9c24b5-d08a-4251-9416-4003bee1f6e5/permissoes');
+                const data = await response.json();
+                
+                resultado.textContent = JSON.stringify({
+                    status: response.status,
+                    ok: response.ok,
+                    data: data
+                }, null, 2);
+            } catch (error) {
+                resultado.textContent = 'Erro: ' + error.message;
+            }
+        }
+        
+        async function verificarAuth() {
+            const resultado = document.getElementById('resultado-auth');
+            resultado.textContent = 'Verificando...';
+            
+            try {
+                const response = await fetch('/api/auth/me');
+                const data = await response.json();
+                
+                resultado.textContent = JSON.stringify({
+                    status: response.status,
+                    ok: response.ok,
+                    data: data
+                }, null, 2);
+            } catch (error) {
+                resultado.textContent = 'Erro: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
