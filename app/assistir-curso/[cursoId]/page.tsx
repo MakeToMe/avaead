@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import "./scrollbar.css"
 import { useParams, useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import {
@@ -19,7 +20,7 @@ import {
   X,
   Home,
 } from "lucide-react"
-import { Button } from "@/components/ui/button"
+
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
@@ -34,15 +35,15 @@ import {
 } from "./actions"
 import { ContentViewer } from "./components/content-viewer"
 import { PainelAnotacoes } from "./components/painel-anotacoes"
+import { CardAcessoNegado } from "./components/card-acesso-negado"
 
-export default function AssistirCursoPage() {
+function AssistirCursoPageContent() {
   const params = useParams()
   const router = useRouter()
   const { user } = useAuth()
   const { toast } = useToast()
 
   const cursoId = params.cursoId as string
-
   const [curso, setCurso] = useState<CursoCompleto | null>(null)
   const [progresso, setProgresso] = useState<ProgressoUsuario | null>(null)
   const [aulaAtual, setAulaAtual] = useState<AulaDetalhada | null>(null)
@@ -52,70 +53,24 @@ export default function AssistirCursoPage() {
   const [modulosExpandidos, setModulosExpandidos] = useState<Set<string>>(new Set())
   const [modoFoco, setModoFoco] = useState(false)
   const [currentVideoTime, setCurrentVideoTime] = useState<number | undefined>(undefined)
+  const [aulaAcessoNegado, setAulaAcessoNegado] = useState<{ aulaId: string, motivo: string } | null>(null)
+  const [isClient, setIsClient] = useState(false)
 
-  // Injetar CSS para scrollbar personalizado
+  // Variável para controlar exibição de badges
+  const showBadges = true
+
+  // Definir isClient após montagem do componente
   useEffect(() => {
-    // Garantir que o CSS seja aplicado após a renderização
-    const styleElement = document.createElement("style")
-    styleElement.textContent = `
-      /* Scrollbar personalizado com tema indigo/azul */
-      .content-area::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      
-      .content-area::-webkit-scrollbar-track {
-        background: rgba(30, 41, 59, 0.4);
-        border-radius: 4px;
-      }
-      
-      .content-area::-webkit-scrollbar-thumb {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.7), rgba(79, 70, 229, 0.7));
-        border-radius: 4px;
-        border: 1px solid rgba(30, 41, 59, 0.2);
-      }
-      
-      .content-area::-webkit-scrollbar-thumb:hover {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.9), rgba(79, 70, 229, 0.9));
-      }
-      
-      /* Firefox */
-      .content-area {
-        scrollbar-width: thin;
-        scrollbar-color: rgba(99, 102, 241, 0.7) rgba(30, 41, 59, 0.4);
-      }
-      
-      /* Sidebar scrollbar */
-      .sidebar-area::-webkit-scrollbar {
-        width: 6px;
-      }
-      
-      .sidebar-area::-webkit-scrollbar-track {
-        background: rgba(30, 41, 59, 0.4);
-      }
-      
-      .sidebar-area::-webkit-scrollbar-thumb {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.6), rgba(79, 70, 229, 0.6));
-        border-radius: 3px;
-      }
-      
-      /* Firefox */
-      .sidebar-area {
-        scrollbar-width: thin;
-        scrollbar-color: rgba(99, 102, 241, 0.6) rgba(30, 41, 59, 0.4);
-      }
-    `
-    document.head.appendChild(styleElement)
-
-    return () => {
-      document.head.removeChild(styleElement)
-    }
+    setIsClient(true)
   }, [])
 
   // Carregar dados do curso
   useEffect(() => {
     const carregarCurso = async () => {
-      if (!user?.uid || !cursoId) return
+      if (!user?.uid || !cursoId) {
+        setCarregando(false)
+        return
+      }
 
       try {
         const resultado = await buscarCursoCompleto(cursoId, user.uid)
@@ -163,10 +118,50 @@ export default function AssistirCursoPage() {
     setModulosExpandidos(novosExpandidos)
   }
 
-  const selecionarAula = (aula: AulaDetalhada) => {
+  const selecionarAula = async (aula: AulaDetalhada) => {
+    // Sempre selecionar a aula primeiro para melhor UX
     setAulaAtual(aula)
-    // Resetar o tempo do vídeo quando mudar de aula
     setCurrentVideoTime(undefined)
+    setAulaAcessoNegado(null) // Limpar estado anterior
+
+    // Verificar se a aula requer permissões especiais (sempre verificar privada, ao vivo será verificado pela API)
+    if (aula.tipo_acesso === 'privada') {
+      try {
+        const response = await fetch(`/api/aulas/${aula.id}/verificar-acesso?usuario_id=${user?.uid}`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        })
+
+        // Verificar se a resposta é JSON válida
+        const contentType = response.headers.get('content-type')
+        if (!contentType || !contentType.includes('application/json')) {
+          console.error('Resposta não é JSON:', await response.text())
+          setAulaAcessoNegado({
+            aulaId: aula.id,
+            motivo: 'Erro na verificação de acesso. Tente novamente mais tarde.'
+          })
+          return
+        }
+
+        const result = await response.json()
+
+        if (!result.permitido) {
+          // Definir estado de acesso negado para mostrar card especial
+          setAulaAcessoNegado({
+            aulaId: aula.id,
+            motivo: result.motivo || 'Esta é uma aula privada. Você precisa de permissão especial para acessá-la.'
+          })
+        }
+      } catch (error) {
+        console.error('Erro ao verificar acesso:', error)
+        setAulaAcessoNegado({
+          aulaId: aula.id,
+          motivo: 'Erro na verificação de acesso. Verifique sua conexão e tente novamente.'
+        })
+      }
+    }
   }
 
   const marcarComoAssistida = async () => {
@@ -196,7 +191,7 @@ export default function AssistirCursoPage() {
           description: resultado.error,
         })
       }
-    } catch (error) {
+    } catch {
       toast({
         variant: "destructive",
         title: "Erro",
@@ -250,7 +245,7 @@ export default function AssistirCursoPage() {
     return progresso?.aulas_assistidas.includes(aulaId) || false
   }
 
-  const handleContentProgress = (currentTime?: number, duration?: number) => {
+  const handleContentProgress = (currentTime?: number) => {
     // Atualizar o tempo atual do vídeo para as anotações
     if (currentTime !== undefined) {
       setCurrentVideoTime(currentTime)
@@ -265,7 +260,8 @@ export default function AssistirCursoPage() {
     marcarComoAssistida()
   }
 
-  if (carregando) {
+  // Loading state - incluir verificação de usuário
+  if (carregando || !user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 flex items-center justify-center">
         <div className="text-center">
@@ -276,14 +272,17 @@ export default function AssistirCursoPage() {
     )
   }
 
-  if (!curso || !aulaAtual) {
+  if (!curso || !aulaAtual || !cursoId) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 flex items-center justify-center">
         <div className="text-center">
           <h2 className="text-xl font-semibold text-white mb-2">Curso não encontrado</h2>
-          <Button onClick={() => router.push("/trilha-aprendizado")} variant="outline">
+          <button
+            onClick={() => router.push("/trilha-aprendizado")}
+            className="px-4 py-2 border border-slate-600 rounded-md text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+          >
             Voltar à Trilha
-          </Button>
+          </button>
         </div>
       </div>
     )
@@ -295,38 +294,32 @@ export default function AssistirCursoPage() {
       <header className="bg-slate-800/50 border-b border-slate-700/50 p-4 flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
               onClick={() => router.push("/trilha-aprendizado")}
-              className="text-slate-400 hover:text-white hover:bg-slate-700/50"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
             >
-              <Home className="w-4 h-4 mr-2" />
+              <Home className="w-4 h-4" />
               Trilha
-            </Button>
+            </button>
             <div className="text-sm text-slate-400">
               {curso.titulo} • {aulaAtual.modulo_titulo} • {aulaAtual.titulo}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
               onClick={() => setModoFoco(!modoFoco)}
-              className="text-slate-400 hover:text-white hover:bg-slate-700/50"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
             >
               <Maximize className="w-4 h-4" />
               {modoFoco ? "Sair do Foco" : "Modo Foco"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
+            </button>
+            <button
               onClick={() => setSidebarAberta(!sidebarAberta)}
-              className="lg:hidden text-slate-400 hover:text-white hover:bg-slate-700/50"
+              className="lg:hidden flex items-center gap-2 px-3 py-1.5 text-sm text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
             >
               <Menu className="w-4 h-4" />
-            </Button>
+            </button>
           </div>
         </div>
       </header>
@@ -343,27 +336,24 @@ export default function AssistirCursoPage() {
               transition={{ duration: 0.3 }}
               className="w-80 bg-slate-800/30 border-r border-slate-700/50 flex-shrink-0 overflow-hidden"
             >
-              <div className="h-full overflow-y-auto sidebar-area">
+              <div className="h-full overflow-y-auto scrollbar-sidebar">
                 <div className="p-4">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="font-semibold text-white">Conteúdo do Curso</h3>
-                    <Button
-                      variant="ghost"
-                      size="sm"
+                    <button
                       onClick={() => setSidebarAberta(false)}
-                      className="lg:hidden text-slate-400 hover:text-white hover:bg-slate-700/50"
+                      className="lg:hidden p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
                     >
                       <X className="w-4 h-4" />
-                    </Button>
+                    </button>
                   </div>
 
                   <div className="space-y-2">
                     {curso.modulos.map((modulo) => (
                       <div key={modulo.id} className="space-y-1">
-                        <Button
-                          variant="ghost"
+                        <button
                           onClick={() => toggleModulo(modulo.id)}
-                          className="w-full justify-between text-left p-3 h-auto text-slate-300 hover:text-white hover:bg-slate-700/50"
+                          className="w-full flex justify-between items-center text-left p-3 text-slate-300 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
                         >
                           <span className="font-medium">{modulo.titulo}</span>
                           {modulosExpandidos.has(modulo.id) ? (
@@ -371,7 +361,7 @@ export default function AssistirCursoPage() {
                           ) : (
                             <ChevronDown className="w-4 h-4" />
                           )}
-                        </Button>
+                        </button>
 
                         <AnimatePresence>
                           {modulosExpandidos.has(modulo.id) && (
@@ -384,15 +374,18 @@ export default function AssistirCursoPage() {
                             >
                               <div className="ml-4 space-y-1">
                                 {modulo.aulas.map((aula) => (
-                                  <Button
+                                  <button
                                     key={aula.id}
-                                    variant="ghost"
                                     onClick={() => selecionarAula(aula)}
                                     className={cn(
-                                      "w-full justify-start text-left p-3 h-auto text-sm",
+                                      "w-full flex justify-start text-left p-3 text-sm transition-colors rounded-md",
                                       aulaAtual.id === aula.id
-                                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-600/30 hover:text-indigo-300"
-                                        : "text-slate-400 hover:text-white hover:bg-slate-700/30",
+                                        ? (aulaAcessoNegado?.aulaId === aula.id)
+                                          ? "bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/30 hover:text-red-300"
+                                          : "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-600/30 hover:text-indigo-300"
+                                        : aula.tipo_acesso === 'privada'
+                                          ? "text-slate-400 hover:text-white hover:bg-red-900/20 border-l-4 border-red-500/30"
+                                          : "text-slate-400 hover:text-white hover:bg-slate-700/30",
                                     )}
                                   >
                                     <div className="flex items-center gap-3 w-full">
@@ -405,14 +398,39 @@ export default function AssistirCursoPage() {
                                         {getIconeAula(aula.tipo)}
                                       </div>
                                       <div className="flex-1 min-w-0">
-                                        <div className="truncate">{aula.titulo}</div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="truncate">{aula.titulo}</span>
+                                          {/* Badge de Tipo de Aula */}
+                                          <div className="flex gap-1">
+                                            {/* Badge de Tipo de Acesso */}
+                                            <span className={cn(
+                                              "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium shrink-0",
+                                              aula.tipo_acesso === 'privada'
+                                                ? 'bg-red-900/30 text-red-400 border border-red-500/30'
+                                                : 'bg-green-900/30 text-green-400 border border-green-500/30'
+                                            )}>
+                                              {aula.tipo_acesso === 'privada' ? (
+                                                <>🔒 Privada</>
+                                              ) : (
+                                                <>🌐 Pública</>
+                                              )}
+                                            </span>
+
+                                            {/* Badge de Aula Ao Vivo */}
+                                            {aula.ao_vivo && (
+                                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium shrink-0 bg-red-900/30 text-red-400 border border-red-500/30">
+                                                🔴 Ao Vivo
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
                                         <div className="flex items-center gap-2 text-xs text-slate-500">
                                           <Clock className="w-3 h-3" />
                                           {formatarDuracao(aula.duracao)}
                                         </div>
                                       </div>
                                     </div>
-                                  </Button>
+                                  </button>
                                 ))}
                               </div>
                             </motion.div>
@@ -429,15 +447,19 @@ export default function AssistirCursoPage() {
 
         {/* Área Central Escrolável */}
         <div className="flex-1 flex min-w-0">
-          <div className="flex-1 bg-black/20 overflow-y-auto content-area">
+          <div className="flex-1 bg-black/20 overflow-y-auto scrollbar-custom">
             <div className="p-4 space-y-6">
               {/* Player/Visualizador */}
               <div className="w-full max-w-5xl mx-auto">
-                <ContentViewer
-                  aula={aulaAtual}
-                  onProgress={handleContentProgress}
-                  onCompleted={handleContentCompleted}
-                />
+                {aulaAcessoNegado?.aulaId === aulaAtual.id ? (
+                  <CardAcessoNegado aula={aulaAtual} motivo={aulaAcessoNegado.motivo} />
+                ) : (
+                  <ContentViewer
+                    aula={aulaAtual}
+                    onProgress={handleContentProgress}
+                    onCompleted={handleContentCompleted}
+                  />
+                )}
               </div>
 
               {/* Controles de Navegação */}
@@ -445,15 +467,14 @@ export default function AssistirCursoPage() {
                 <div className="bg-slate-800/30 rounded-lg border border-slate-700/50 p-4">
                   {/* Primeira linha: Navegação e Progresso */}
                   <div className="flex items-center justify-between mb-4">
-                    <Button
-                      variant="outline"
+                    <button
                       onClick={() => navegarAula("anterior")}
                       disabled={!curso.modulos[0]?.aulas[0] || aulaAtual.id === curso.modulos[0].aulas[0].id}
-                      className="border-slate-600/50 bg-slate-800/30 text-slate-300 hover:text-white hover:bg-slate-700/50 hover:border-slate-500"
+                      className="flex items-center gap-2 px-4 py-2 border border-slate-600/50 bg-slate-800/30 text-slate-300 hover:text-white hover:bg-slate-700/50 hover:border-slate-500 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <ChevronLeft className="w-4 h-4 mr-2" />
+                      <ChevronLeft className="w-4 h-4" />
                       Anterior
-                    </Button>
+                    </button>
 
                     <div className="flex-1 mx-8">
                       <div className="text-center mb-2">
@@ -464,25 +485,33 @@ export default function AssistirCursoPage() {
                       <Progress value={progresso?.progresso_percentual || 0} className="h-2" />
                     </div>
 
-                    <Button
+                    <button
                       onClick={() => navegarAula("proxima")}
-                      className="bg-indigo-600/80 hover:bg-indigo-600 text-white border-0"
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-md transition-colors"
                     >
                       Próxima
-                      <ChevronRight className="w-4 h-4 ml-2" />
-                    </Button>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
                   </div>
 
                   {/* Segunda linha: Marcar como Concluída */}
                   <div className="flex justify-center">
-                    <Button
-                      variant="outline"
-                      onClick={marcarComoAssistida}
-                      className="border-green-600/50 bg-green-900/20 text-green-400 hover:bg-green-600/20 hover:text-green-300 hover:border-green-500"
-                    >
-                      <CheckCircle className="w-4 h-4 mr-2" />
-                      Marcar como Concluída
-                    </Button>
+                    {aulaAcessoNegado?.aulaId === aulaAtual.id ? (
+                      <div className="flex items-center gap-2 px-4 py-2 border border-red-600/50 bg-red-900/20 text-red-400 rounded-md">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        Acesso Restrito
+                      </div>
+                    ) : (
+                      <button
+                        onClick={marcarComoAssistida}
+                        className="flex items-center gap-2 px-4 py-2 border border-green-600/50 bg-green-900/20 text-green-400 hover:bg-green-600/20 hover:text-green-300 hover:border-green-500 rounded-md transition-colors"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        Marcar como Concluída
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -503,7 +532,39 @@ export default function AssistirCursoPage() {
                           <span className="font-medium text-white">Duração:</span>
                           <span className="text-slate-400">{formatarDuracao(aulaAtual.duracao)}</span>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-white">Tipo:</span>
+                          <div className="flex gap-2">
+                            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${aulaAtual.tipo_acesso === 'privada'
+                              ? 'bg-red-900/30 text-red-400 border border-red-500/30'
+                              : 'bg-green-900/30 text-green-400 border border-green-500/30'
+                              }`}>
+                              {aulaAtual.tipo_acesso === 'privada' ? '🔒 Privada' : '🌐 Pública'}
+                            </span>
+                            {showBadges && (
+                              <>
+                                {aulaAtual.ao_vivo && (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-900/30 text-red-400 border border-red-500/30">
+                                    🔴 Ao Vivo
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
                       </div>
+
+                      {isClient && aulaAcessoNegado?.aulaId === aulaAtual.id && (
+                        <div className="mb-4 p-4 bg-red-900/20 border border-red-500/30 rounded-lg">
+                          <div className="flex items-center gap-2 mb-2">
+                            <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16c-.77.833.192 2.5 1.732 2.5z" />
+                            </svg>
+                            <span className="font-medium text-red-400">Acesso Restrito</span>
+                          </div>
+                          <p className="text-sm text-red-300">{aulaAcessoNegado.motivo}</p>
+                        </div>
+                      )}
 
                       <div className="border-t border-slate-700/50 pt-4">
                         <h4 className="font-medium text-white mb-3">Resumo</h4>
@@ -533,18 +594,16 @@ export default function AssistirCursoPage() {
                 transition={{ duration: 0.3 }}
                 className="w-80 bg-slate-800/30 border-l border-slate-700/50 flex-shrink-0 overflow-hidden"
               >
-                <div className="h-full overflow-y-auto sidebar-area">
+                <div className="h-full overflow-y-auto scrollbar-sidebar">
                   <div className="p-4">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="font-semibold text-white">Recursos</h3>
-                      <Button
-                        variant="ghost"
-                        size="sm"
+                      <button
                         onClick={() => setPainelInfoAberto(false)}
-                        className="text-slate-400 hover:text-white hover:bg-slate-700/50"
+                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-md transition-colors"
                       >
                         <X className="w-4 h-4" />
-                      </Button>
+                      </button>
                     </div>
 
                     <Tabs defaultValue="anotacoes" className="h-full">
@@ -582,26 +641,43 @@ export default function AssistirCursoPage() {
 
       {/* Botões para reabrir painéis quando fechados */}
       {!sidebarAberta && !modoFoco && (
-        <Button
-          variant="ghost"
-          size="sm"
+        <button
           onClick={() => setSidebarAberta(true)}
-          className="fixed left-4 top-1/2 -translate-y-1/2 z-50 bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700/60 border border-slate-600/50"
+          className="fixed left-4 top-1/2 -translate-y-1/2 z-50 p-2 bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700/60 border border-slate-600/50 rounded-md transition-colors"
         >
           <ChevronRight className="w-4 h-4" />
-        </Button>
+        </button>
       )}
 
       {!painelInfoAberto && !modoFoco && (
-        <Button
-          variant="ghost"
-          size="sm"
+        <button
           onClick={() => setPainelInfoAberto(true)}
-          className="fixed right-4 top-1/2 -translate-y-1/2 z-50 bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700/60 border border-slate-600/50"
+          className="fixed right-4 top-1/2 -translate-y-1/2 z-50 p-2 bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700/60 border border-slate-600/50 rounded-md transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
-        </Button>
+        </button>
       )}
     </div>
   )
+}
+
+export default function AssistirCursoPage() {
+  const { user, isLoading } = useAuth()
+  const params = useParams()
+
+  // Loading state mais robusto
+  if (isLoading || !user || !params?.cursoId) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400 mx-auto mb-4"></div>
+          <p className="text-slate-300">
+            {isLoading ? 'Verificando autenticação...' : 'Carregando curso...'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return <AssistirCursoPageContent />
 }

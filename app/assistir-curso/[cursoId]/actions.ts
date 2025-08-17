@@ -14,6 +14,9 @@ export interface AulaDetalhada {
   modulo_id: string
   modulo_titulo: string
   criado_em: string
+  privada: boolean
+  ao_vivo: boolean
+  tipo_acesso: 'publica' | 'privada' // Campo derivado para compatibilidade
 }
 
 export interface ModuloComAulas {
@@ -37,6 +40,86 @@ export interface ProgressoUsuario {
   progresso_percentual: number
   status: string
   aulas_assistidas: string[]
+}
+
+// Função para verificar acesso a uma aula específica (server-side)
+async function verificarAcessoAulaServidor(
+  aulaId: string, 
+  userId: string, 
+  supabase: any,
+  isInstrutor: boolean,
+  temAcessoTotal: boolean,
+  aulasComPermissao: Set<string>
+) {
+  try {
+    // Buscar dados da aula
+    const { data: aula } = await supabase
+      .from("aulas")
+      .select("privada, ao_vivo")
+      .eq("id", aulaId)
+      .single()
+
+    if (!aula) {
+      return { permitido: false, motivo: 'Aula não encontrada' }
+    }
+
+    // Instrutor sempre tem acesso
+    if (isInstrutor) {
+      return { permitido: true, motivo: 'Você é o instrutor' }
+    }
+
+    // Acesso total sempre tem acesso
+    if (temAcessoTotal) {
+      return { permitido: true, motivo: 'Você tem acesso total ao curso' }
+    }
+
+    // Aulas públicas sempre permitidas
+    if (!aula.privada && !aula.ao_vivo) {
+      return { permitido: true, motivo: 'Aula pública' }
+    }
+
+    // Aulas privadas ou ao vivo precisam de permissão específica
+    if (aula.privada || aula.ao_vivo) {
+      if (aulasComPermissao.has(aulaId)) {
+        return { permitido: true, motivo: 'Você tem permissão específica' }
+      } else {
+        const tipo = aula.ao_vivo ? 'ao vivo' : 'privada'
+        return { 
+          permitido: false, 
+          motivo: `Esta é uma aula ${tipo}. Entre em contato com o instrutor para solicitar acesso.` 
+        }
+      }
+    }
+
+    return { permitido: true, motivo: 'Acesso liberado' }
+  } catch (error) {
+    console.error('Erro ao verificar acesso:', error)
+    return {
+      permitido: false,
+      motivo: 'Erro ao verificar acesso. Tente novamente.'
+    }
+  }
+}
+
+// Função para verificar acesso do lado do cliente (quando necessário)
+export async function verificarAcessoAula(aulaId: string, userId: string) {
+  try {
+    const response = await fetch(`/api/aulas/${aulaId}/verificar-acesso?usuario_id=${userId}`)
+    const result = await response.json()
+    
+    return {
+      permitido: result.permitido || false,
+      motivo: result.motivo || 'Acesso não verificado',
+      tipo_acesso: result.tipo_acesso || 'desconhecido'
+    }
+  } catch (error) {
+    console.error('Erro ao verificar acesso:', error)
+    return {
+      permitido: false,
+      motivo: 'Erro ao verificar acesso. Tente novamente.',
+      tipo_acesso: 'erro'
+    }
+  }
 }
 
 // Função helper para registrar atividade
@@ -134,6 +217,20 @@ export async function buscarCursoCompleto(cursoId: string, userId: string) {
       return { success: false, error: "Erro ao buscar módulos" }
     }
 
+    // Buscar permissões específicas do usuário para aulas ao vivo e privadas
+    const { data: permissoesUsuario } = await supabase
+      .from("aula_permissoes")
+      .select("aula_id, tipo_permissao")
+      .eq("aluno_id", userId)
+
+    const aulasComPermissao = new Set(permissoesUsuario?.map(p => p.aula_id) || [])
+
+    // Verificar se é instrutor do curso
+    const isInstrutor = curso.instrutor_id === userId
+
+    // Verificar se tem acesso total (convidado_curso)
+    const temAcessoTotal = matricula.tipo_acesso === 'convidado_curso'
+
     // Buscar aulas de todos os módulos
     const modulosComAulas: ModuloComAulas[] = []
 
@@ -148,6 +245,8 @@ export async function buscarCursoCompleto(cursoId: string, userId: string) {
           tipo,
           media_url,
           duracao,
+          privada,
+          ao_vivo,
           criado_em
         `)
         .eq("modulo_id", modulo.id)
@@ -158,7 +257,29 @@ export async function buscarCursoCompleto(cursoId: string, userId: string) {
         continue
       }
 
-      const aulasDetalhadas: AulaDetalhada[] = (aulas || []).map((aula) => ({
+      // Filtrar aulas baseado nas permissões
+      const aulasPermitidas = (aulas || []).filter((aula) => {
+        // Instrutor sempre vê todas as aulas
+        if (isInstrutor) return true
+        
+        // Acesso total vê todas as aulas
+        if (temAcessoTotal) return true
+        
+        // Aulas públicas sempre são visíveis para alunos matriculados
+        if (!aula.privada && !aula.ao_vivo) return true
+        
+        // Aulas privadas aparecem para todos, mas acesso é controlado na visualização
+        if (aula.privada && !aula.ao_vivo) return true
+        
+        // Aulas ao vivo só aparecem se tiver permissão específica
+        if (aula.ao_vivo) {
+          return aulasComPermissao.has(aula.id)
+        }
+        
+        return true
+      })
+
+      const aulasDetalhadas: AulaDetalhada[] = aulasPermitidas.map((aula) => ({
         id: aula.id,
         titulo: aula.titulo,
         descricao: aula.descricao || "",
@@ -169,6 +290,9 @@ export async function buscarCursoCompleto(cursoId: string, userId: string) {
         modulo_id: modulo.id,
         modulo_titulo: modulo.titulo,
         criado_em: aula.criado_em,
+        privada: aula.privada || false,
+        ao_vivo: aula.ao_vivo || false,
+        tipo_acesso: aula.privada ? 'privada' : 'publica', // Campo derivado
       }))
 
       if (aulasDetalhadas.length > 0) {
@@ -230,7 +354,7 @@ export async function marcarAulaAssistida(aulaId: string, cursoId: string, userI
     // Buscar dados da aula para a atividade
     const { data: aula, error: aulaError } = await supabase
       .from("aulas")
-      .select("titulo, modulo_id")
+      .select("titulo, modulo_id, ao_vivo")
       .eq("id", aulaId)
       .single()
 
@@ -321,11 +445,12 @@ export async function marcarAulaAssistida(aulaId: string, cursoId: string, userI
       )
     }
 
-    // Calcular novo progresso do curso
+    // Calcular novo progresso do curso (excluindo aulas ao vivo)
     const { count: totalAulas } = await supabase
       .from("aulas")
       .select("*", { count: "exact", head: true })
       .eq("curso_id", cursoId)
+      .eq("ao_vivo", false) // Excluir aulas ao vivo do cálculo de progresso
 
     const { count: aulasAssistidas } = await supabase
       .from("progresso_aulas")

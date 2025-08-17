@@ -36,11 +36,15 @@ import {
 } from "../../actions"
 import type { AulaData, ModuloData } from "../../actions"
 import { getCurrentClientUser } from "@/lib/auth-client"
+import { useAuthV2 as useAuth } from "@/contexts/auth-context-v2"
 import { useToast } from "@/hooks/use-toast"
 import { formatarTamanhoArquivo } from "@/lib/utils-arquivo"
 import { useRouter, useParams } from "next/navigation"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Users, Shield, Eye, Zap } from "lucide-react"
+import { ModalAdicionarPermissao } from "@/components/aulas/modal-adicionar-permissao"
 
 interface Curso {
   id: string
@@ -127,6 +131,12 @@ export default function EditarAulaPage() {
   const [linkDialogOpen, setLinkDialogOpen] = useState(false)
   const [selectionText, setSelectionText] = useState("")
 
+  // Estados para gerenciamento de permissões
+  const [permissoes, setPermissoes] = useState<any>(null)
+  const [loadingPermissoes, setLoadingPermissoes] = useState(false)
+  const [modalPermissaoOpen, setModalPermissaoOpen] = useState(false)
+  const [alunoSelecionado, setAlunoSelecionado] = useState<any>(null)
+
   // Ref para o editor de conteúdo
   const editorRef = useRef<HTMLDivElement>(null)
   const savedSelectionRef = useRef<Range | null>(null)
@@ -135,6 +145,7 @@ export default function EditarAulaPage() {
   const router = useRouter()
   const params = useParams()
   const aulaId = params.aulaId as string
+  const { user, isLoading: authLoading, isAuthenticated } = useAuth()
 
   const [formData, setFormData] = useState({
     curso_id: "",
@@ -149,10 +160,26 @@ export default function EditarAulaPage() {
     media_url: "",
   })
 
-  // Carregar dados da aula quando a página carregar
+  // Carregar dados da aula quando a página carregar (aguardar autenticação)
   useEffect(() => {
-    carregarDadosAula()
-  }, [aulaId])
+    const carregarTudo = async () => {
+      if (authLoading) {
+        console.log('🔄 Aguardando autenticação...')
+        return
+      }
+      
+      if (!isAuthenticated || !user) {
+        console.log('❌ Usuário não autenticado, redirecionando...')
+        router.push('/auth/signin')
+        return
+      }
+      
+      console.log('✅ Usuário autenticado, carregando dados...')
+      await carregarDadosAula()
+      await carregarPermissoes()
+    }
+    carregarTudo()
+  }, [aulaId, authLoading, isAuthenticated, user])
 
   // Adicione um novo useEffect para atualizar o editor quando o conteúdo for carregado:
   useEffect(() => {
@@ -209,12 +236,16 @@ export default function EditarAulaPage() {
   }
 
   const carregarDadosAula = async () => {
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
+    if (!user?.uid) {
+      console.log('❌ Usuário não autenticado, aguardando...')
+      return
+    }
 
+    console.log('🔄 Carregando dados da aula:', aulaId, 'usuário:', user.uid)
     setLoadingAula(true)
     try {
-      const result = await buscarAulaPorId(aulaId, currentUser.uid)
+      const result = await buscarAulaPorId(aulaId, user.uid)
+      console.log('📊 Resultado buscarAulaPorId:', result)
       if (result.success && result.data) {
         const aula = result.data
 
@@ -247,7 +278,10 @@ export default function EditarAulaPage() {
             editorRef.current.innerHTML = aula.conteudo
           }
         }, 100)
+        
+        console.log('✅ Dados da aula carregados com sucesso')
       } else {
+        console.error('❌ Falha ao carregar aula:', result.message)
         toast({
           variant: "destructive",
           title: "Erro ao carregar aula",
@@ -256,24 +290,95 @@ export default function EditarAulaPage() {
         router.push("/minhas-aulas")
       }
     } catch (error) {
-      console.error("Erro ao carregar aula:", error)
+      console.error("❌ Erro ao carregar aula:", error)
       toast({
         variant: "destructive",
         title: "Erro inesperado",
         description: "Erro inesperado ao carregar aula",
       })
     } finally {
+      console.log('🏁 Finalizando carregamento da aula')
       setLoadingAula(false)
     }
   }
 
+  const carregarPermissoes = async () => {
+    setLoadingPermissoes(true)
+    try {
+      const response = await fetch(`/api/aulas/${aulaId}/permissoes`)
+      
+      if (response.ok) {
+        const data = await response.json()
+        setPermissoes(data)
+        console.log('✅ Permissões carregadas:', data)
+      } else {
+        const errorData = await response.json()
+        console.error('❌ Erro ao carregar permissões:', errorData.error)
+        toast({
+          variant: "destructive",
+          title: "Erro ao carregar permissões",
+          description: errorData.error || 'Erro desconhecido',
+        })
+      }
+    } catch (error) {
+      console.error('❌ Erro ao carregar permissões:', error)
+      toast({
+        variant: "destructive",
+        title: "Erro ao carregar permissões",
+        description: 'Erro de conexão com o servidor',
+      })
+    } finally {
+      setLoadingPermissoes(false)
+    }
+  }
+
+  const handleAdicionarPermissao = (aluno: any) => {
+    setAlunoSelecionado(aluno)
+    setModalPermissaoOpen(true)
+  }
+
+  const handleRemoverPermissao = async (alunoId: string) => {
+    try {
+      const response = await fetch(`/api/aulas/${aulaId}/permissoes/${alunoId}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        toast({
+          title: "✅ Permissão Removida",
+          description: "Permissão removida com sucesso",
+        })
+        carregarPermissoes()
+      } else {
+        const data = await response.json()
+        toast({
+          variant: "destructive",
+          title: "Erro ao Remover Permissão",
+          description: data.error || 'Erro desconhecido',
+        })
+      }
+    } catch (error) {
+      console.error('Erro:', error)
+      toast({
+        variant: "destructive",
+        title: "Erro",
+        description: 'Erro ao conectar com o servidor',
+      })
+    }
+  }
+
+  const onPermissaoConcedida = () => {
+    carregarPermissoes()
+    setModalPermissaoOpen(false)
+    setAlunoSelecionado(null)
+  }
+
   const carregarCursos = async () => {
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
+    if (!user?.uid) return
 
     setLoadingCursos(true)
     try {
-      const result = await buscarCursosDoInstrutor(currentUser.uid)
+      const result = await buscarCursosDoInstrutor(user.uid)
       if (result.success) {
         setCursos(result.data)
       }
@@ -285,12 +390,11 @@ export default function EditarAulaPage() {
   }
 
   const carregarModulos = async (cursoId: string) => {
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
+    if (!user?.uid) return
 
     setLoadingModulos(true)
     try {
-      const result = await buscarModulosDoCurso(cursoId, currentUser.uid)
+      const result = await buscarModulosDoCurso(cursoId, user.uid)
       if (result.success) {
         setModulos(result.data)
       }
@@ -304,8 +408,7 @@ export default function EditarAulaPage() {
   const handleCriarNovoModulo = async () => {
     if (!novoModulo.trim() || !formData.curso_id) return
 
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
+    if (!user?.uid) return
 
     setCriandoModulo(true)
     try {
@@ -320,7 +423,7 @@ export default function EditarAulaPage() {
         ativo: true,
       }
 
-      const result = await criarModulo(moduloData, currentUser.uid)
+      const result = await criarModulo(moduloData, user.uid)
 
       if (result.success) {
         toast({
@@ -513,8 +616,7 @@ export default function EditarAulaPage() {
     setLoading(true)
 
     try {
-      const currentUser = getCurrentClientUser()
-      if (!currentUser?.uid) {
+      if (!user?.uid) {
         toast({
           variant: "destructive",
           title: "Erro de autenticação",
@@ -624,7 +726,7 @@ export default function EditarAulaPage() {
 
       
 
-      const result = await editarAula(aulaId, aulaData, currentUser.uid)
+      const result = await editarAula(aulaId, aulaData, user.uid)
 
       if (result.success) {
         toast({
@@ -658,12 +760,24 @@ export default function EditarAulaPage() {
   // Verificar se os campos devem estar habilitados
   const camposHabilitados = moduloSelecionado
 
-  if (loadingAula) {
+  // Loading states
+  if (authLoading || loadingAula) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 flex items-center justify-center">
-        <div className="text-white text-xl">Carregando aula...</div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400 mx-auto mb-4"></div>
+          <div className="text-white text-xl">
+            {authLoading ? 'Verificando autenticação...' : 'Carregando aula...'}
+          </div>
+        </div>
       </div>
     )
+  }
+
+  // Redirect if not authenticated
+  if (!isAuthenticated || !user) {
+    router.push('/auth/signin')
+    return null
   }
 
   return (
@@ -686,16 +800,35 @@ export default function EditarAulaPage() {
           <p className="text-slate-400 mt-2">Edite os dados da sua aula</p>
         </div>
 
-        {/* Formulário */}
-        <Card className="max-w-4xl mx-auto bg-gradient-to-br from-slate-800/95 to-gray-900/95 border-slate-700/50">
-          <CardHeader>
-            <CardTitle className="text-xl text-white flex items-center gap-2">
-              <PlayCircle className="w-5 h-5 text-indigo-400" />
-              Informações da Aula
-            </CardTitle>
-          </CardHeader>
+        {/* Tabs para Edição e Gerenciamento */}
+        <div className="max-w-4xl mx-auto bg-gradient-to-br from-slate-800/95 to-gray-900/95 border border-slate-700/50 rounded-lg shadow-xl">
+          <Tabs defaultValue="editar" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 bg-slate-800/50 border-b border-slate-700/50">
+              <TabsTrigger 
+                value="editar" 
+                className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+              >
+                <PlayCircle className="w-4 h-4 mr-2" />
+                Editar Aula
+              </TabsTrigger>
+              <TabsTrigger 
+                value="permissoes"
+                className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+              >
+                <Shield className="w-4 h-4 mr-2" />
+                Gerenciar Permissões
+              </TabsTrigger>
+            </TabsList>
 
-          <CardContent>
+            {/* Aba de Edição */}
+            <TabsContent value="editar" className="p-6">
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-xl text-white flex items-center gap-2 mb-4">
+                    <PlayCircle className="w-5 h-5 text-indigo-400" />
+                    Informações da Aula
+                  </h3>
+                </div>
             <form onSubmit={handleSubmit} className="space-y-6">
               {/* Curso */}
               <div className="space-y-2">
@@ -1185,8 +1318,206 @@ export default function EditarAulaPage() {
                 </Button>
               </div>
             </form>
-          </CardContent>
-        </Card>
+              </div>
+            </TabsContent>
+
+            {/* Aba de Permissões */}
+            <TabsContent value="permissoes" className="p-6">
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-xl text-white flex items-center gap-2 mb-2">
+                    <Shield className="w-5 h-5 text-indigo-400" />
+                    Gerenciar Permissões da Aula
+                  </h3>
+                  <p className="text-slate-400 text-sm mb-6">
+                    Gerencie quem pode acessar esta aula específica. As permissões aqui são apenas para esta aula.
+                  </p>
+                </div>
+
+                {loadingPermissoes ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400"></div>
+                  </div>
+                ) : permissoes ? (
+                  <div className="space-y-6">
+                    {/* Informações da Aula */}
+                    <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                      <h4 className="text-white font-medium mb-2">{permissoes.aula.titulo}</h4>
+                      <div className="flex gap-2">
+                        {permissoes.aula.privada && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            🔒 Privada
+                          </span>
+                        )}
+                        {permissoes.aula.ao_vivo && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            🔴 Ao Vivo
+                          </span>
+                        )}
+                        {!permissoes.aula.privada && !permissoes.aula.ao_vivo && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            🌐 Pública
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Estatísticas */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Users className="w-4 h-4 text-green-400" />
+                          <span className="text-slate-300 text-sm">Com Acesso</span>
+                        </div>
+                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_com_acesso}</div>
+                      </div>
+                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Users className="w-4 h-4 text-yellow-400" />
+                          <span className="text-slate-300 text-sm">Sem Acesso</span>
+                        </div>
+                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_sem_acesso}</div>
+                      </div>
+                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Shield className="w-4 h-4 text-blue-400" />
+                          <span className="text-slate-300 text-sm">Convites Específicos</span>
+                        </div>
+                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.convites_especificos}</div>
+                      </div>
+                    </div>
+
+                    {/* Alunos com Acesso */}
+                    {permissoes.alunos_com_acesso.length > 0 && (
+                      <div>
+                        <h4 className="text-white font-medium mb-4 flex items-center gap-2">
+                          <Eye className="w-4 h-4 text-green-400" />
+                          Alunos com Acesso ({permissoes.alunos_com_acesso.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {permissoes.alunos_com_acesso.map((aluno: any) => (
+                            <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                              <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 bg-gradient-to-br from-green-600 to-emerald-600 rounded-full flex items-center justify-center">
+                                  <span className="text-white text-sm font-medium">
+                                    {aluno.nome.charAt(0).toUpperCase()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <div className="text-white font-medium">{aluno.nome}</div>
+                                  <div className="text-slate-400 text-sm">{aluno.email}</div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                                  aluno.tipo_acesso === 'convidado_curso' 
+                                    ? 'bg-blue-100 text-blue-800' 
+                                    : 'bg-purple-100 text-purple-800'
+                                }`}>
+                                  {aluno.tipo_acesso === 'convidado_curso' ? 'Acesso Total' : 'Convite Específico'}
+                                </span>
+                                {aluno.tipo_acesso !== 'convidado_curso' && (
+                                  <Button
+                                    onClick={() => handleRemoverPermissao(aluno.aluno_id)}
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-red-400 border-red-400 hover:bg-red-400 hover:text-white"
+                                  >
+                                    Remover
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Alunos sem Acesso */}
+                    {permissoes.alunos_sem_acesso.length > 0 && (
+                      <div>
+                        <h4 className="text-white font-medium mb-4 flex items-center gap-2">
+                          <Users className="w-4 h-4 text-yellow-400" />
+                          Alunos sem Acesso ({permissoes.alunos_sem_acesso.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {permissoes.alunos_sem_acesso.map((aluno: any) => (
+                            <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                              <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 bg-gradient-to-br from-gray-600 to-slate-600 rounded-full flex items-center justify-center">
+                                  <span className="text-white text-sm font-medium">
+                                    {aluno.nome.charAt(0).toUpperCase()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <div className="text-white font-medium">{aluno.nome}</div>
+                                  <div className="text-slate-400 text-sm">{aluno.email}</div>
+                                  <div className="text-slate-500 text-xs">
+                                    Progresso: {aluno.progresso_percentual}%
+                                  </div>
+                                </div>
+                              </div>
+                              <Button
+                                onClick={() => handleAdicionarPermissao(aluno)}
+                                size="sm"
+                                className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
+                              >
+                                <Shield className="w-4 h-4 mr-2" />
+                                Conceder Acesso
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Mensagem quando não há alunos */}
+                    {permissoes.alunos_sem_acesso.length === 0 && permissoes.alunos_com_acesso.length === 0 && (
+                      <div className="text-center py-8">
+                        <Users className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+                        <h4 className="text-slate-400 font-medium mb-2">Nenhum aluno matriculado</h4>
+                        <p className="text-slate-500 text-sm">
+                          Não há alunos matriculados neste curso ainda.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <Shield className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+                    <h4 className="text-slate-400 font-medium mb-2">Erro ao carregar permissões</h4>
+                    <p className="text-slate-500 text-sm">
+                      Não foi possível carregar as informações de permissões.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        {/* Modal de Adicionar Permissão */}
+        {modalPermissaoOpen && alunoSelecionado && permissoes && (
+          <ModalAdicionarPermissao
+            isOpen={modalPermissaoOpen}
+            onClose={() => setModalPermissaoOpen(false)}
+            aula={{
+              id: permissoes.aula.id,
+              titulo: permissoes.aula.titulo,
+              privada: permissoes.aula.privada,
+              ao_vivo: permissoes.aula.ao_vivo
+            }}
+            aluno={{
+              id: alunoSelecionado.id,
+              aluno_id: alunoSelecionado.aluno_id,
+              nome: alunoSelecionado.nome,
+              email: alunoSelecionado.email,
+              data_matricula: alunoSelecionado.data_matricula,
+              progresso_percentual: alunoSelecionado.progresso_percentual
+            }}
+            onPermissaoConcedida={onPermissaoConcedida}
+          />
+        )}
       </div>
     </div>
   )
