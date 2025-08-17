@@ -12,7 +12,11 @@ import "./globals.css"
 
 
 
-const inter = Inter({ subsets: ["latin"] })
+const inter = Inter({ 
+  subsets: ["latin"],
+  display: 'swap',
+  variable: '--font-inter'
+})
 
 export const metadata: Metadata = {
   title: "Saber365",
@@ -29,36 +33,13 @@ export default function RootLayout({
     <html lang="pt-BR">
       <head>
         {/* CSS CIRÚRGICO - APENAS PARA CERTIFICADOS */}
-        <style
-          dangerouslySetInnerHTML={{
-            __html: `
-              /* APENAS para a página de certificados */
-              [data-page="certificados"] {
-                background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%) !important;
-                color: #ffffff !important;
-                min-height: 100vh !important;
-              }
-              
-              /* APENAS skeleton de certificados */
-              [data-skeleton="certificados-item"] {
-                background-color: #1e293b !important;
-                border: 1px solid #374151 !important;
-                color: #ffffff !important;
-              }
-              
-              [data-skeleton="certificados-item"] > * {
-                background-color: #374151 !important;
-                color: #ffffff !important;
-              }
-            `,
-          }}
-        />
+        {/* Temporariamente desabilitado para debug de hidratação */}
       </head>
-      <body className={inter.className}>
+      <body className={`${inter.variable} font-sans`}>
         <AuthProviderV2>
           <DashboardLayout>{children}</DashboardLayout>
           <Toaster />
-          <DebugLoader />
+          {/* <DebugLoader /> */}
           <LogCleanupInit />
         </AuthProviderV2>
       </body>

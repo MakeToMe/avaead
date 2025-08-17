@@ -34,6 +34,7 @@ export default function AuthGuardV2({
   const router = useRouter()
   const [hasCheckedSession, setHasCheckedSession] = React.useState(false)
   const [shouldRedirect, setShouldRedirect] = React.useState(false)
+  const [timeoutReached, setTimeoutReached] = React.useState(false)
   
   // Fazer verificação de sessão apenas uma vez quando o guard é montado
   React.useEffect(() => {
@@ -52,6 +53,19 @@ export default function AuthGuardV2({
     checkSession()
   }, [hasCheckedSession])
   
+  // Timeout de segurança para evitar loading infinito
+  React.useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!hasCheckedSession) {
+        logger.warn('Timeout na verificação de sessão - forçando continuação')
+        setHasCheckedSession(true)
+        setTimeoutReached(true)
+      }
+    }, 5000) // 5 segundos
+    
+    return () => clearTimeout(timeout)
+  }, [hasCheckedSession])
+  
   // Gerenciar redirecionamento (sempre no topo, nunca condicional)
   React.useEffect(() => {
     if (shouldRedirect) {
@@ -59,8 +73,8 @@ export default function AuthGuardV2({
     }
   }, [shouldRedirect, router, redirectTo])
   
-  // Mostrar loading enquanto verifica autenticação
-  if (isLoading || !hasCheckedSession) {
+  // Mostrar loading enquanto verifica autenticação (com timeout)
+  if ((isLoading || !hasCheckedSession) && !timeoutReached) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>

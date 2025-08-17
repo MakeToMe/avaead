@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-16T15:32:57.567Z",
+  "score_geral": 56,
+  "detalhes": {
+    "estrutura": 100,
+    "variaveis": 0,
+    "testes": 0,
+    "banco": 33,
+    "apis": 100,
+    "componentes": 100
+  },
+  "status": "EM_DESENVOLVIMENTO"
+}

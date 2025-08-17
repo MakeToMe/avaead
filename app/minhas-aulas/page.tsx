@@ -90,12 +90,18 @@ export default function MinhasAulasPage() {
     setLoading(false)
 
     // Carregar cursos do instrutor para o filtro
-    carregarCursos(currentUser.uid)
+    carregarCursos(authUser.uid)
 
     console.log('✅ MinhasAulasPage: Usuário autorizado, carregando dados')
-    // Carregar aulas do instrutor
-    carregarAulas(authUser.uid, paginaAtual, cursoSelecionado)
-  }, [authUser, authLoading, hasRole, router, paginaAtual, cursoSelecionado])
+  }, [authUser, authLoading])
+
+  // useEffect separado para carregar aulas quando filtros mudarem
+  useEffect(() => {
+    if (user?.uid) {
+      console.log('🔄 Carregando aulas para filtros:', { paginaAtual, cursoSelecionado });
+      carregarAulas(user.uid, paginaAtual, cursoSelecionado)
+    }
+  }, [user?.uid, paginaAtual, cursoSelecionado])
 
   const carregarCursos = async (instrutorId: string) => {
     try {

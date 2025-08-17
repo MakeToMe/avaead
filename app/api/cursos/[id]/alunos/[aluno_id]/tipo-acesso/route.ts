@@ -1,149 +1,162 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { conviteService } from '@/lib/convite-service';
-import { AlterarTipoAcessoSchema } from '@/lib/schemas/convites';
-import { withErrorHandler } from '@/lib/middleware/error-handler';
+import { Pool } from 'pg';
+import { z } from 'zod';
+import { SistemaAuditoria } from '@/lib/auditoria/sistema-auditoria';
 
-/**
- * PUT /api/cursos/[id]/alunos/[aluno_id]/tipo-acesso
- * Altera o tipo de acesso de um aluno matriculado
- */
-async function handlePut(
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
+
+const AlterarTipoAcessoSchema = z.object({
+  tipo_acesso: z.enum(['matriculado', 'convidado_curso'])
+});
+
+export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string; aluno_id: string } }
-): Promise<NextResponse> {
-  // Validar dados da requisição
-  const body = await request.json();
-  const dadosValidados = AlterarTipoAcessoSchema.parse(body);
+  { params }: { params: Promise<{ id: string; aluno_id: string }> }
+) {
+  const client = await pool.connect();
+  
+  try {
+    const { id: cursoId, aluno_id: alunoId } = await params;
+    const body = await request.json();
 
-  // Alterar tipo de acesso
-  const resultado = await conviteService.alterarTipoAcesso(
-    params.id,
-    params.aluno_id,
-    dadosValidados.tipo_acesso,
-    dadosValidados.instrutor_id
-  );
+    // Validar dados de entrada
+    const { tipo_acesso } = AlterarTipoAcessoSchema.parse(body);
 
-  if (!resultado.success) {
-    throw resultado;
-  }
+    await client.query('BEGIN');
 
-  // Buscar dados atualizados do aluno
-  const supabase = (conviteService as any).supabase;
-  const { data: matricula } = await supabase
-    .from('matriculas')
-    .select(`
-      id,
-      tipo_acesso,
-      adicionado_por,
-      atualizado_em,
-      users:aluno_id (
-        uid,
-        nome,
-        email
-      )
-    `)
-    .eq('curso_id', params.id)
-    .eq('aluno_id', params.aluno_id)
-    .single();
-
-  return NextResponse.json({
-    success: true,
-    message: 'Tipo de acesso alterado com sucesso',
-    data: {
-      aluno_id: params.aluno_id,
-      curso_id: params.id,
-      tipo_acesso_anterior: body.tipo_acesso_anterior || 'desconhecido',
-      tipo_acesso_atual: dadosValidados.tipo_acesso,
-      alterado_por: dadosValidados.instrutor_id,
-      alterado_em: new Date().toISOString(),
-      matricula: matricula
+    // Verificar se o curso existe e buscar dados para auditoria
+    const cursoQuery = `
+      SELECT c.id, c.titulo, c.instrutor_id, u.nome as aluno_nome, u.email as aluno_email
+      FROM rarcursos.cursos c
+      CROSS JOIN rarcursos.users u
+      WHERE c.id = $1 AND u.uid = $2
+    `;
+    const cursoResult = await client.query(cursoQuery, [cursoId, alunoId]);
+    
+    if (cursoResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return NextResponse.json(
+        { error: 'Curso ou aluno não encontrado' },
+        { status: 404 }
+      );
     }
-  });
-}
 
-export const PUT = withErrorHandler(handlePut);
+    const cursoData = cursoResult.rows[0];
 
-/**
- * GET /api/cursos/[id]/alunos/[aluno_id]/tipo-acesso
- * Consulta o tipo de acesso atual de um aluno
- */
-async function handleGet(
-  request: NextRequest,
-  { params }: { params: { id: string; aluno_id: string } }
-): Promise<NextResponse> {
-  const { searchParams } = new URL(request.url);
-  const instrutorId = searchParams.get('instrutor_id');
+    // Verificar se a matrícula existe
+    const matriculaQuery = `
+      SELECT id, tipo_acesso, aluno_id, curso_id
+      FROM rarcursos.matriculas
+      WHERE curso_id = $1 AND aluno_id = $2
+    `;
+    const matriculaResult = await client.query(matriculaQuery, [cursoId, alunoId]);
 
-  if (!instrutorId) {
-    return NextResponse.json({
-      success: false,
-      error: 'instrutor_id é obrigatório'
-    }, { status: 400 });
-  }
-
-  // Verificar se é instrutor do curso
-  const isInstrutor = await (conviteService as any).verificarInstrutor(params.id, instrutorId);
-  if (!isInstrutor) {
-    return NextResponse.json({
-      success: false,
-      error: 'Usuário não é instrutor deste curso'
-    }, { status: 403 });
-  }
-
-  // Buscar dados da matrícula
-  const supabase = (conviteService as any).supabase;
-  const { data: matricula, error } = await supabase
-    .from('matriculas')
-    .select(`
-      id,
-      tipo_acesso,
-      data_matricula,
-      adicionado_por,
-      progresso_percentual,
-      status,
-      criado_em,
-      atualizado_em,
-      users:aluno_id (
-        uid,
-        nome,
-        email
-      )
-    `)
-    .eq('curso_id', params.id)
-    .eq('aluno_id', params.aluno_id)
-    .single();
-
-  if (error || !matricula) {
-    return NextResponse.json({
-      success: false,
-      error: 'Aluno não está matriculado neste curso'
-    }, { status: 404 });
-  }
-
-  // Buscar permissões específicas se existirem
-  const { data: permissoes } = await supabase
-    .from('aula_permissoes')
-    .select(`
-      id,
-      aula_id,
-      tipo_permissao,
-      criado_em,
-      aulas:aula_id (
-        id,
-        titulo
-      )
-    `)
-    .eq('aluno_id', params.aluno_id)
-    .eq('tipo_permissao', 'convite_especifico');
-
-  return NextResponse.json({
-    success: true,
-    data: {
-      matricula,
-      permissoes_especificas: permissoes || [],
-      total_permissoes_especificas: permissoes?.length || 0
+    if (matriculaResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return NextResponse.json(
+        { error: 'Matrícula não encontrada' },
+        { status: 404 }
+      );
     }
-  });
-}
 
-export const GET = withErrorHandler(handleGet);
+    const matricula = matriculaResult.rows[0];
+
+    // Verificar se já tem o tipo de acesso solicitado
+    if (matricula.tipo_acesso === tipo_acesso) {
+      await client.query('ROLLBACK');
+      return NextResponse.json({
+        success: true,
+        message: 'Tipo de acesso já está configurado'
+      });
+    }
+
+    // Atualizar tipo de acesso
+    const updateQuery = `
+      UPDATE rarcursos.matriculas 
+      SET tipo_acesso = $1, atualizado_em = NOW()
+      WHERE id = $2
+      RETURNING *
+    `;
+    const updateResult = await client.query(updateQuery, [tipo_acesso, matricula.id]);
+
+    if (updateResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return NextResponse.json(
+        { error: 'Erro ao atualizar tipo de acesso' },
+        { status: 500 }
+      );
+    }
+
+    await client.query('COMMIT');
+
+    // Log de auditoria (fora da transação para não bloquear)
+    try {
+      const acao = tipo_acesso === 'convidado_curso' ? 'promovido' : 'rebaixado';
+      const tipoEvento = `aluno_${acao}`;
+      
+      await SistemaAuditoria.registrarEvento({
+        tipoEvento,
+        severidade: 'info',
+        usuarioId: cursoData.instrutor_id, // Quem fez a ação
+        usuarioAfetadoId: alunoId, // Quem foi afetado
+        recursoTipo: 'matricula',
+        recursoId: matricula.id,
+        detalhes: {
+          curso_id: cursoId,
+          curso_titulo: cursoData.titulo,
+          aluno_nome: cursoData.aluno_nome,
+          aluno_email: cursoData.aluno_email,
+          tipo_acesso_anterior: matricula.tipo_acesso,
+          tipo_acesso_novo: tipo_acesso,
+          acao: acao
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers.get('user-agent')
+      });
+    } catch (auditError) {
+      console.error('Erro ao registrar auditoria:', auditError);
+      // Não falhar a operação por causa do log
+    }
+
+    const mensagemSucesso = tipo_acesso === 'convidado_curso' 
+      ? `${cursoData.aluno_nome} foi promovido para acesso total ao curso`
+      : `${cursoData.aluno_nome} foi rebaixado para acesso básico`;
+
+    return NextResponse.json({
+      success: true,
+      message: mensagemSucesso,
+      tipo_acesso_anterior: matricula.tipo_acesso,
+      tipo_acesso_novo: tipo_acesso,
+      aluno: {
+        nome: cursoData.aluno_nome,
+        email: cursoData.aluno_email
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erro na API de alterar tipo de acesso:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Dados inválidos',
+        detalhes: error.errors
+      }, { status: 400 });
+    }
+
+    return NextResponse.json(
+      { error: 'Erro interno do servidor' },
+      { status: 500 }
+    );
+  } finally {
+    client.release();
+  }
+}

@@ -10,11 +10,13 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { ArrowLeft, Upload, X, Clock, Edit3 } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ArrowLeft, Upload, X, Clock, Edit3, Users } from "lucide-react"
 import { editarCurso, buscarCursoPorId, uploadImagemMinio } from "../../actions"
 import type { CursoData } from "../../actions"
 import { getCurrentClientUser } from "@/lib/auth-client"
 import { useToast } from "@/hooks/use-toast"
+import { GerenciarAlunos } from "@/components/dashboard-instrutor/GerenciarAlunos"
 
 export default function EditarCursoPage() {
   const router = useRouter()
@@ -278,9 +280,28 @@ export default function EditarCursoPage() {
           </div>
         </div>
 
-        {/* Formulário */}
-        <div className="bg-gradient-to-br from-slate-800/40 to-gray-900/40 backdrop-blur-sm rounded-xl border border-slate-700/50 shadow-xl p-8">
-          <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Tabs para Edição e Gerenciamento */}
+        <div className="bg-gradient-to-br from-slate-800/40 to-gray-900/40 backdrop-blur-sm rounded-xl border border-slate-700/50 shadow-xl">
+          <Tabs defaultValue="editar" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 bg-slate-800/50 border-b border-slate-700/50">
+              <TabsTrigger 
+                value="editar" 
+                className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+              >
+                <Edit3 className="w-4 h-4 mr-2" />
+                Editar Curso
+              </TabsTrigger>
+              <TabsTrigger 
+                value="alunos"
+                className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+              >
+                <Users className="w-4 h-4 mr-2" />
+                Gerenciar Alunos
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="editar" className="p-8">
+              <form onSubmit={handleSubmit} className="space-y-6">
             {/* Título */}
             <div className="space-y-2">
               <Label htmlFor="titulo" className="text-slate-300">
@@ -441,7 +462,13 @@ export default function EditarCursoPage() {
                 {loading ? "Salvando..." : uploadingImage ? "Enviando imagem..." : "Salvar Alterações"}
               </Button>
             </div>
-          </form>
+              </form>
+            </TabsContent>
+
+            <TabsContent value="alunos" className="p-8">
+              <GerenciarAlunos cursoId={cursoId} />
+            </TabsContent>
+          </Tabs>
         </div>
       </div>
     </div>

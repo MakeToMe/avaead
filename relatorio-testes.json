@@ -1,0 +1,60 @@
+{
+  "timestamp": "2025-08-16T17:19:49.330Z",
+  "resultados": {
+    "passaram": 10,
+    "falharam": 0,
+    "detalhes": [
+      {
+        "nome": "Verificar estrutura de serviços",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar componentes React",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar estrutura de APIs",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar testes unitários",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar documentação",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar configurações",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar sintaxe TypeScript",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar estrutura do banco",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Verificar qualidade do código",
+        "status": "PASSOU",
+        "erro": null
+      },
+      {
+        "nome": "Testar build da aplicação",
+        "status": "PASSOU",
+        "erro": null
+      }
+    ]
+  },
+  "porcentagemSucesso": 100
+}

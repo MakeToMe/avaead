@@ -1,66 +1,77 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from 'pg'
 import { registrarAtividade } from "./actions"
+
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 // Buscar estatísticas para admin/instrutor
 export async function getAdminStats(userId: string, userProfile: string) {
-  const supabase = createServerSupabaseClient()
+  const client = await pool.connect()
 
   try {
     if (userProfile === "admin") {
       // Admin vê estatísticas globais
+      const cursosQuery = "SELECT COUNT(*) as count FROM rarcursos.cursos"
+      const aulasQuery = "SELECT COUNT(*) as count FROM rarcursos.aulas"
+      const alunosQuery = `
+        SELECT COUNT(DISTINCT aluno_id) as count 
+        FROM rarcursos.matriculas 
+        WHERE status = 'ativa'
+      `
+
       const [cursosResult, aulasResult, alunosResult] = await Promise.all([
-        supabase.from("cursos").select("*", { count: "exact", head: true }),
-        supabase.from("aulas").select("*", { count: "exact", head: true }),
-        supabase.from("matriculas").select("aluno_id", { count: "exact", head: true }).eq("status", "ativa"),
+        client.query(cursosQuery),
+        client.query(aulasQuery),
+        client.query(alunosQuery)
       ])
 
-      // Contar alunos únicos
-      const { data: alunosUnicos } = await supabase.from("matriculas").select("aluno_id").eq("status", "ativa")
-
-      const alunosUnicosCount = new Set(alunosUnicos?.map((m) => m.aluno_id)).size
-
       return {
-        cursosCount: cursosResult.count || 0,
-        aulasCount: aulasResult.count || 0,
-        alunosCount: alunosUnicosCount,
+        cursosCount: parseInt(cursosResult.rows[0].count) || 0,
+        aulasCount: parseInt(aulasResult.rows[0].count) || 0,
+        alunosCount: parseInt(alunosResult.rows[0].count) || 0,
       }
     } else {
       // Instrutor vê apenas suas estatísticas
-      const [cursosResult, aulasResult] = await Promise.all([
-        supabase.from("cursos").select("*", { count: "exact", head: true }).eq("instrutor_id", userId),
-        supabase
-          .from("aulas")
-          .select(
-            `
-            *,
-            modulos!inner(
-              curso_id,
-              cursos!inner(instrutor_id)
-            )
-          `,
-            { count: "exact", head: true },
-          )
-          .eq("modulos.cursos.instrutor_id", userId),
+      const cursosQuery = `
+        SELECT COUNT(*) as count 
+        FROM rarcursos.cursos 
+        WHERE instrutor_id = $1
+      `
+      
+      const aulasQuery = `
+        SELECT COUNT(DISTINCT a.id) as count
+        FROM rarcursos.aulas a
+        JOIN rarcursos.modulos m ON a.modulo_id = m.id
+        JOIN rarcursos.cursos c ON m.curso_id = c.id
+        WHERE c.instrutor_id = $1
+      `
+      
+      const alunosQuery = `
+        SELECT COUNT(DISTINCT m.aluno_id) as count
+        FROM rarcursos.matriculas m
+        JOIN rarcursos.cursos c ON m.curso_id = c.id
+        WHERE m.status = 'ativa' AND c.instrutor_id = $1
+      `
+
+      const [cursosResult, aulasResult, alunosResult] = await Promise.all([
+        client.query(cursosQuery, [userId]),
+        client.query(aulasQuery, [userId]),
+        client.query(alunosQuery, [userId])
       ])
 
-      // Buscar alunos únicos dos cursos do instrutor
-      const { data: alunosData } = await supabase
-        .from("matriculas")
-        .select(`
-          aluno_id,
-          cursos!inner(instrutor_id)
-        `)
-        .eq("status", "ativa")
-        .eq("cursos.instrutor_id", userId)
-
-      const alunosUnicosCount = new Set(alunosData?.map((m) => m.aluno_id)).size
-
       return {
-        cursosCount: cursosResult.count || 0,
-        aulasCount: aulasResult.count || 0,
-        alunosCount: alunosUnicosCount,
+        cursosCount: parseInt(cursosResult.rows[0].count) || 0,
+        aulasCount: parseInt(aulasResult.rows[0].count) || 0,
+        alunosCount: parseInt(alunosResult.rows[0].count) || 0,
       }
     }
   } catch (error) {
@@ -70,71 +81,79 @@ export async function getAdminStats(userId: string, userProfile: string) {
       aulasCount: 0,
       alunosCount: 0,
     }
+  } finally {
+    client.release()
   }
 }
 
 // Buscar alunos com paginação e filtro
 export async function getAlunos(userId: string, userProfile: string, page = 1, limit = 10, search = "") {
-  const supabase = createServerSupabaseClient()
+  const client = await pool.connect()
   const offset = (page - 1) * limit
 
   try {
-    // Modificar a query para incluir data de matrícula e progresso
-    let query = supabase
-      .from("matriculas")
-      .select(`
-        aluno_id,
-        criado_em,
-        curso_id,
-        users!inner(
-          uid,
-          nome,
-          email,
-          whatsapp,
-          mail_valid,
-          wpp_valid
-        ),
-        cursos!inner(
-          id,
-          titulo,
-          instrutor_id
-        )
-      `)
-      .eq("status", "ativa")
+    // Query base para buscar matrículas com dados do usuário e curso
+    let matriculasQuery = `
+      SELECT 
+        m.id as matricula_id,
+        m.aluno_id,
+        m.curso_id,
+        m.criado_em,
+        u.uid,
+        u.nome,
+        u.email,
+        u.whatsapp,
+        u.mail_valid,
+        u.wpp_valid,
+        c.id as curso_id,
+        c.titulo as curso_titulo
+      FROM rarcursos.matriculas m
+      JOIN rarcursos.users u ON m.aluno_id = u.uid
+      JOIN rarcursos.cursos c ON m.curso_id = c.id
+      WHERE m.status = 'ativa'
+    `
+
+    const queryParams: any[] = []
+    let paramIndex = 1
 
     // Filtrar por instrutor se não for admin
     if (userProfile !== "admin") {
-      query = query.eq("cursos.instrutor_id", userId)
+      matriculasQuery += ` AND c.instrutor_id = $${paramIndex}`
+      queryParams.push(userId)
+      paramIndex++
     }
 
     // Aplicar filtro de busca se fornecido
     if (search.trim()) {
-      query = query.or(`users.nome.ilike.%${search}%,users.email.ilike.%${search}%`)
+      matriculasQuery += ` AND (u.nome ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`
+      queryParams.push(`%${search}%`)
+      paramIndex++
     }
 
-    const { data: matriculas, error } = await query
-      .order("criado_em", { ascending: false })
-      .range(offset, offset + limit - 1)
+    matriculasQuery += ` ORDER BY m.criado_em DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`
+    queryParams.push(limit, offset)
 
-    if (error) {
-      console.error("Erro ao buscar alunos:", error)
+    const matriculasResult = await client.query(matriculasQuery, queryParams)
+    const matriculas = matriculasResult.rows
+
+    if (matriculas.length === 0) {
       return { alunos: [], total: 0 }
     }
 
     // Agrupar por aluno e seus cursos
     const alunosMap = new Map()
 
-    matriculas?.forEach((matricula: any) => {
+    matriculas.forEach((matricula: any) => {
       const alunoId = matricula.aluno_id
 
       if (!alunosMap.has(alunoId)) {
         alunosMap.set(alunoId, {
-          uid: matricula.users.uid,
-          nome: matricula.users.nome,
-          email: matricula.users.email,
-          whatsapp: matricula.users.whatsapp,
-          email_verificado: matricula.users.mail_valid,
-          whatsapp_verificado: matricula.users.wpp_valid,
+          uid: matricula.uid,
+          nome: matricula.nome,
+          email: matricula.email,
+          whatsapp: matricula.whatsapp,
+          email_verificado: matricula.mail_valid,
+          whatsapp_verificado: matricula.wpp_valid,
           cursos: [],
           primeira_matricula: matricula.criado_em,
         })
@@ -142,9 +161,9 @@ export async function getAlunos(userId: string, userProfile: string, page = 1, l
 
       const aluno = alunosMap.get(alunoId)
       aluno.cursos.push({
-        id: matricula.cursos.id,
-        titulo: matricula.cursos.titulo,
-        matricula_id: matricula.id,
+        id: matricula.curso_id,
+        titulo: matricula.curso_titulo,
+        matricula_id: matricula.matricula_id,
       })
 
       // Manter a data da primeira matrícula
@@ -153,29 +172,49 @@ export async function getAlunos(userId: string, userProfile: string, page = 1, l
       }
     })
 
-    // Após buscar as matrículas, buscar o progresso de cada aluno
+    // Buscar progresso para cada curso de cada aluno
     const alunosComProgresso = await Promise.all(
       Array.from(alunosMap.values()).map(async (aluno) => {
         const cursosComProgresso = await Promise.all(
           aluno.cursos.map(async (curso) => {
-            // Buscar total de aulas do curso
-            const { count: totalAulas } = await supabase
-              .from("aulas")
-              .select("*", { count: "exact", head: true })
-              .eq("modulos.curso_id", curso.id)
+            try {
+              // Buscar total de aulas do curso
+              const totalAulasQuery = `
+                SELECT COUNT(*) as count
+                FROM rarcursos.aulas a
+                JOIN rarcursos.modulos m ON a.modulo_id = m.id
+                WHERE m.curso_id = $1
+              `
+              const totalAulasResult = await client.query(totalAulasQuery, [curso.id])
+              const totalAulas = parseInt(totalAulasResult.rows[0].count) || 0
 
-            // Buscar aulas assistidas pelo aluno
-            const { count: aulasAssistidas } = await supabase
-              .from("progresso_aulas")
-              .select("*", { count: "exact", head: true })
-              .eq("matricula_id", curso.matricula_id)
-              .eq("assistida", true)
+              // Buscar aulas assistidas pelo aluno (se tabela progresso_aulas existir)
+              let aulasAssistidas = 0
+              try {
+                const aulasAssistidasQuery = `
+                  SELECT COUNT(*) as count
+                  FROM rarcursos.progresso_aulas
+                  WHERE matricula_id = $1 AND assistida = true
+                `
+                const aulasAssistidasResult = await client.query(aulasAssistidasQuery, [curso.matricula_id])
+                aulasAssistidas = parseInt(aulasAssistidasResult.rows[0].count) || 0
+              } catch (error) {
+                // Tabela progresso_aulas pode não existir ainda
+                aulasAssistidas = 0
+              }
 
-            const progresso = totalAulas > 0 ? Math.round((aulasAssistidas / totalAulas) * 100) : 0
+              const progresso = totalAulas > 0 ? Math.round((aulasAssistidas / totalAulas) * 100) : 0
 
-            return {
-              ...curso,
-              progresso,
+              return {
+                ...curso,
+                progresso,
+              }
+            } catch (error) {
+              console.error(`Erro ao calcular progresso do curso ${curso.id}:`, error)
+              return {
+                ...curso,
+                progresso: 0,
+              }
             }
           }),
         )
@@ -187,131 +226,168 @@ export async function getAlunos(userId: string, userProfile: string, page = 1, l
       }),
     )
 
-    const alunos = alunosComProgresso
-
     // Buscar total para paginação
-    let countQuery = supabase
-      .from("matriculas")
-      .select("aluno_id", { count: "exact", head: true })
-      .eq("status", "ativa")
+    let countQuery = `
+      SELECT COUNT(DISTINCT m.aluno_id) as count
+      FROM rarcursos.matriculas m
+      JOIN rarcursos.cursos c ON m.curso_id = c.id
+      WHERE m.status = 'ativa'
+    `
+
+    const countParams: any[] = []
+    let countParamIndex = 1
 
     if (userProfile !== "admin") {
-      countQuery = countQuery.eq("cursos.instrutor_id", userId)
+      countQuery += ` AND c.instrutor_id = $${countParamIndex}`
+      countParams.push(userId)
+      countParamIndex++
     }
 
-    const { count } = await countQuery
+    if (search.trim()) {
+      countQuery += ` AND EXISTS (
+        SELECT 1 FROM rarcursos.users u 
+        WHERE u.uid = m.aluno_id 
+        AND (u.nome ILIKE $${countParamIndex} OR u.email ILIKE $${countParamIndex})
+      )`
+      countParams.push(`%${search}%`)
+    }
+
+    const countResult = await client.query(countQuery, countParams)
+    const total = parseInt(countResult.rows[0].count) || 0
 
     return {
-      alunos,
-      total: count || 0,
+      alunos: alunosComProgresso,
+      total,
     }
   } catch (error) {
     console.error("Erro ao buscar alunos:", error)
     return { alunos: [], total: 0 }
+  } finally {
+    client.release()
   }
 }
 
 // Buscar cursos disponíveis para matricular aluno
 export async function getCursosDisponiveis(userId: string, userProfile: string, alunoId: string) {
-  const supabase = createServerSupabaseClient()
+  const client = await pool.connect()
 
   try {
     // Buscar cursos que o aluno NÃO está matriculado
-    const { data: cursosMatriculados } = await supabase
-      .from("matriculas")
-      .select("curso_id")
-      .eq("aluno_id", alunoId)
-      .eq("status", "ativa")
+    const cursosMatriculadosQuery = `
+      SELECT curso_id 
+      FROM rarcursos.matriculas 
+      WHERE aluno_id = $1 AND status = 'ativa'
+    `
+    const cursosMatriculadosResult = await client.query(cursosMatriculadosQuery, [alunoId])
+    const cursosMatriculadosIds = cursosMatriculadosResult.rows.map(row => row.curso_id)
 
-    const cursosMatriculadosIds = cursosMatriculados?.map((m) => m.curso_id) || []
-
-    let query = supabase.from("cursos").select("id, titulo, nivel, ativo").eq("ativo", true)
+    // Query para buscar cursos disponíveis
+    let cursosQuery = `
+      SELECT id, titulo, nivel, ativo 
+      FROM rarcursos.cursos 
+      WHERE ativo = true
+    `
+    const queryParams: any[] = []
+    let paramIndex = 1
 
     // Filtrar por instrutor se não for admin
     if (userProfile !== "admin") {
-      query = query.eq("instrutor_id", userId)
+      cursosQuery += ` AND instrutor_id = $${paramIndex}`
+      queryParams.push(userId)
+      paramIndex++
     }
 
     // Excluir cursos já matriculados
     if (cursosMatriculadosIds.length > 0) {
-      query = query.not("id", "in", `(${cursosMatriculadosIds.join(",")})`)
+      const placeholders = cursosMatriculadosIds.map((_, index) => `$${paramIndex + index}`).join(',')
+      cursosQuery += ` AND id NOT IN (${placeholders})`
+      queryParams.push(...cursosMatriculadosIds)
     }
 
-    const { data: cursos, error } = await query.order("titulo")
+    cursosQuery += ` ORDER BY titulo`
 
-    if (error) {
-      console.error("Erro ao buscar cursos disponíveis:", error)
-      return []
-    }
-
-    return cursos || []
+    const cursosResult = await client.query(cursosQuery, queryParams)
+    return cursosResult.rows
   } catch (error) {
     console.error("Erro ao buscar cursos disponíveis:", error)
     return []
+  } finally {
+    client.release()
   }
 }
 
 // Matricular aluno manualmente
 export async function matricularAlunoManualmente(instrutorId: string, alunoId: string, cursoId: string) {
-  const supabase = createServerSupabaseClient()
+  const client = await pool.connect()
 
   try {
-    // Verificar se já existe matrícula
-    const { data: matriculaExistente } = await supabase
-      .from("matriculas")
-      .select("id")
-      .eq("aluno_id", alunoId)
-      .eq("curso_id", cursoId)
-      .single()
+    await client.query('BEGIN')
 
-    if (matriculaExistente) {
+    // Verificar se já existe matrícula
+    const matriculaExistenteQuery = `
+      SELECT id FROM rarcursos.matriculas 
+      WHERE aluno_id = $1 AND curso_id = $2
+    `
+    const matriculaExistenteResult = await client.query(matriculaExistenteQuery, [alunoId, cursoId])
+
+    if (matriculaExistenteResult.rows.length > 0) {
+      await client.query('ROLLBACK')
       return { success: false, error: "Aluno já está matriculado neste curso" }
     }
 
     // Buscar dados do curso e aluno para o registro de atividade
+    const cursoQuery = "SELECT titulo FROM rarcursos.cursos WHERE id = $1"
+    const alunoQuery = "SELECT nome FROM rarcursos.users WHERE uid = $1"
+
     const [cursoResult, alunoResult] = await Promise.all([
-      supabase.from("cursos").select("titulo").eq("id", cursoId).single(),
-      supabase.from("users").select("nome").eq("uid", alunoId).single(),
+      client.query(cursoQuery, [cursoId]),
+      client.query(alunoQuery, [alunoId])
     ])
 
-    // Criar matrícula
-    const { data: matricula, error } = await supabase
-      .from("matriculas")
-      .insert({
-        aluno_id: alunoId,
-        curso_id: cursoId,
-        status: "ativa",
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao criar matrícula:", error)
-      return { success: false, error: "Erro ao matricular aluno" }
+    if (cursoResult.rows.length === 0 || alunoResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return { success: false, error: "Curso ou aluno não encontrado" }
     }
 
+    // Criar matrícula
+    const matriculaQuery = `
+      INSERT INTO rarcursos.matriculas (aluno_id, curso_id, status, tipo_acesso)
+      VALUES ($1, $2, 'ativa', 'matriculado')
+      RETURNING *
+    `
+    const matriculaResult = await client.query(matriculaQuery, [alunoId, cursoId])
+    const matricula = matriculaResult.rows[0]
+
+    await client.query('COMMIT')
+
     // Registrar atividade NO PERFIL DO ALUNO (não do instrutor)
-    if (cursoResult.data && alunoResult.data) {
+    try {
       await registrarAtividade(
         alunoId, // <- MUDANÇA: registrar no perfil do aluno
         "foi_matriculado",
         "Foi matriculado em um curso",
-        `Você foi matriculado no curso "${cursoResult.data.titulo}"`,
+        `Você foi matriculado no curso "${cursoResult.rows[0].titulo}"`,
         "graduation-cap",
         "green",
         "matricula",
         matricula.id,
         `/trilha-aprendizado`,
         {
-          curso_titulo: cursoResult.data.titulo,
+          curso_titulo: cursoResult.rows[0].titulo,
           matriculado_por: instrutorId,
         },
       )
+    } catch (error) {
+      console.error("Erro ao registrar atividade:", error)
+      // Não falhar a matrícula por causa do log de atividade
     }
 
     return { success: true, data: matricula }
   } catch (error) {
+    await client.query('ROLLBACK')
     console.error("Erro ao matricular aluno:", error)
     return { success: false, error: "Erro interno do servidor" }
+  } finally {
+    client.release()
   }
 }

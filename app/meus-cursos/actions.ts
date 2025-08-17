@@ -250,9 +250,15 @@ export async function uploadVideoMinio(
 }
 
 export async function buscarCursoPorId(cursoId: string, instrutorId: string) {
+  console.log("🚀 FUNÇÃO CHAMADA - buscarCursoPorId:", { cursoId, instrutorId });
+  
   try {
+    console.log("🔍 Iniciando busca do curso...");
+    
     const supabase = createServerSupabaseClient()
+    console.log("📡 Cliente Supabase criado");
 
+    console.log("🔎 Executando query no Supabase...");
     const { data, error } = await supabase
       .from("cursos")
       .select("*")
@@ -260,14 +266,17 @@ export async function buscarCursoPorId(cursoId: string, instrutorId: string) {
       .eq("instrutor_id", instrutorId)
       .single()
 
+    console.log("📊 Resultado da query:", { data: !!data, error: !!error });
+
     if (error) {
-      console.error("Erro ao buscar curso:", error)
+      console.error("❌ Erro ao buscar curso:", error)
       return { success: false, message: "Curso não encontrado", data: null }
     }
 
+    console.log("✅ Curso encontrado com sucesso:", data?.titulo);
     return { success: true, data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("💥 Erro inesperado na função:", error)
     return { success: false, message: "Erro inesperado ao buscar curso", data: null }
   }
 }

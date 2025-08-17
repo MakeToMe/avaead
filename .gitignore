@@ -29,3 +29,14 @@ next-env.d.ts
 # apps copiados que não farão parte do monorepo
 certificate-app/
 certificate-validation/
+
+# Scripts de migração de banco (uso interno/privado)
+migrate_database.py
+migrate_database_v2.py
+verify_migration.py
+check_database_structure.py
+check_database.py
+check_users_table.py
+check_matriculas_table.py
+db_config.py
+.env

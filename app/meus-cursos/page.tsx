@@ -28,15 +28,18 @@ const ITENS_POR_PAGINA = 6
 
 export default function MeusCursosPage() {
   const { user, isLoading: authLoading } = useAuth()
-  
-  // Helper para verificar role
-  const hasRole = (role: string) => user?.perfis.includes(role) || false
   const [cursos, setCursos] = useState<Curso[]>([])
   const [loadingCursos, setLoadingCursos] = useState(false)
   const [paginaAtual, setPaginaAtual] = useState(1)
   const [totalCursos, setTotalCursos] = useState(0)
+  const [cursosCarregados, setCursosCarregados] = useState(false)
   const router = useRouter()
   const { toast } = useToast()
+
+  // Helper para verificar role (memoizado para evitar re-criação)
+  const isInstrutor = user?.perfis?.includes("instrutor") || false
+  const isAdmin = user?.perfis?.includes("admin") || false
+  const hasPermission = isInstrutor || isAdmin
 
   useEffect(() => {
     // Aguardar carregamento da autenticação
@@ -49,27 +52,40 @@ export default function MeusCursosPage() {
     }
 
     // Verificar se o usuário tem permissão para criar cursos
-    if (!hasRole("instrutor") && !hasRole("admin")) {
+    if (!hasPermission) {
       console.log('⚠️ MeusCursosPage: Usuário sem permissão, redirecionando para dashboard')
       router.push("/dashboard")
+      return
+    }
+
+    // Evitar carregar cursos múltiplas vezes
+    if (cursosCarregados && paginaAtual === 1) {
+      console.log('📋 MeusCursosPage: Cursos já carregados, pulando')
       return
     }
 
     console.log('✅ MeusCursosPage: Usuário autorizado, carregando cursos')
     // Carregar cursos do instrutor
     carregarCursos(user.uid, paginaAtual)
-  }, [user, authLoading, hasRole, router, paginaAtual])
+  }, [user, authLoading, hasPermission, router, paginaAtual, cursosCarregados])
 
   const carregarCursos = async (instrutorId: string, pagina: number) => {
+    if (loadingCursos) return // Evitar múltiplas chamadas simultâneas
+    
     setLoadingCursos(true)
     try {
+      console.log(`🔄 Carregando cursos para instrutor ${instrutorId}, página ${pagina}`)
       const result = await buscarCursosDoInstrutor(instrutorId, pagina, ITENS_POR_PAGINA)
       if (result.success) {
+        console.log(`✅ Cursos carregados: ${result.data.length} cursos`)
         setCursos(result.data)
         setTotalCursos(result.totalCursos)
+        setCursosCarregados(true)
+      } else {
+        console.error("❌ Erro ao buscar cursos:", result.error)
       }
     } catch (error) {
-      console.error("Erro ao carregar cursos:", error)
+      console.error("❌ Erro ao carregar cursos:", error)
       toast({
         variant: "destructive",
         title: "Erro",
@@ -84,6 +100,7 @@ export default function MeusCursosPage() {
     if (user?.uid) {
       // Voltar para a primeira página após adicionar um curso
       setPaginaAtual(1)
+      setCursosCarregados(false) // Forçar recarregamento
       carregarCursos(user.uid, 1)
     }
   }
@@ -115,6 +132,7 @@ export default function MeusCursosPage() {
 
   const handleChangePagina = (novaPagina: number) => {
     setPaginaAtual(novaPagina)
+    setCursosCarregados(false) // Forçar recarregamento da nova página
   }
 
   const totalPaginas = Math.max(1, Math.ceil(totalCursos / ITENS_POR_PAGINA))
@@ -150,7 +168,7 @@ export default function MeusCursosPage() {
   }
 
   // Se não há usuário ou não tem permissão, não renderizar nada (redirecionamento em andamento)
-  if (!user || (!hasRole("instrutor") && !hasRole("admin"))) {
+  if (!user || !hasPermission) {
     return null
   }
 
