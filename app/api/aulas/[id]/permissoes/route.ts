@@ -55,10 +55,24 @@ export async function GET(
     console.log(`📚 Aula encontrada: ${aula.titulo} (Privada: ${aula.privada}, Ao Vivo: ${aula.ao_vivo})`);
 
     if (!aula.privada && !aula.ao_vivo) {
-      return NextResponse.json(
-        { error: 'Esta aula é pública e não é ao vivo, não requer gerenciamento de permissões' },
-        { status: 400 }
-      );
+      // Aula pública e não ao vivo: retornar 200 com listas vazias para evitar erro no cliente
+      return NextResponse.json({
+        aula: {
+          id: aula.id,
+          titulo: aula.titulo,
+          privada: aula.privada,
+          ao_vivo: aula.ao_vivo
+        },
+        alunos_com_acesso: [],
+        alunos_sem_acesso: [],
+        estatisticas: {
+          total_com_acesso: 0,
+          total_sem_acesso: 0,
+          convidados_curso: 0,
+          convites_especificos: 0
+        },
+        message: 'Aula pública e não ao vivo: gerenciamento de permissões não é aplicável.'
+      });
     }
 
     // Buscar alunos com acesso total (convidados do curso) - ajustado para a estrutura real
@@ -226,10 +240,10 @@ export async function POST(
     const aula = aulaResult.rows[0];
 
     if (!aula.privada && !aula.ao_vivo) {
-      return NextResponse.json(
-        { error: 'Não é possível conceder permissões para aulas que não são privadas nem ao vivo' },
-        { status: 400 }
-      );
+      // Aula pública e não ao vivo: nenhuma permissão é necessária. Retornar sucesso silencioso.
+      return NextResponse.json({
+        message: 'Aula pública e não ao vivo: concessão de permissões não é necessária.'
+      });
     }
 
     // Verificar se o aluno está matriculado no curso

@@ -1,6 +1,17 @@
 "use server"
 
 import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from 'pg'
+
+// Pool Postgres (mesma config usada em sidebar-actions)
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+})
 
 export interface CursoData {
   titulo: string
@@ -14,114 +25,98 @@ export interface CursoData {
 
 export async function criarCurso(cursoData: CursoData) {
   try {
-    // Verificar se o instrutor_id foi fornecido
     if (!cursoData.instrutor_id) {
       return { success: false, message: "ID do instrutor é obrigatório" }
     }
 
-    const supabase = createServerSupabaseClient()
-
-    // Verificar se o usuário existe e tem permissão
-    const { data: user, error: userError } = await supabase
-      .from("users")
-      .select("uid, perfis")
-      .eq("uid", cursoData.instrutor_id)
-      .single()
-
-    if (userError || !user) {
-      console.error("Erro ao buscar usuário:", userError)
-      return { success: false, message: "Usuário não encontrado" }
+    const client = await pool.connect()
+    try {
+      const insertQuery = `
+        INSERT INTO rarcursos.cursos
+          (titulo, descricao, nivel, ativo, imagem_url, duracao_total, instrutor_id, criado_em, atualizado_em)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+        RETURNING id, titulo, descricao, nivel, ativo, imagem_url, duracao_total, criado_em, atualizado_em, instrutor_id
+      `
+      const params = [
+        cursoData.titulo,
+        cursoData.descricao,
+        cursoData.nivel,
+        cursoData.ativo,
+        cursoData.imagem_url ?? null,
+        typeof cursoData.duracao_total === 'number' ? cursoData.duracao_total : null,
+        cursoData.instrutor_id
+      ]
+      const res = await client.query(insertQuery, params)
+      const data = res.rows?.[0]
+      return { success: true, message: "Curso criado com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (user.perfis !== "instrutor" && user.perfis !== "admin") {
-      return { success: false, message: "Sem permissão para criar cursos" }
-    }
-
-    const { data, error } = await supabase
-      .from("cursos")
-      .insert({
-        titulo: cursoData.titulo,
-        descricao: cursoData.descricao,
-        nivel: cursoData.nivel,
-        ativo: cursoData.ativo,
-        imagem_url: cursoData.imagem_url,
-        duracao_total: cursoData.duracao_total,
-        instrutor_id: cursoData.instrutor_id,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao criar curso:", error)
-      return { success: false, message: "Erro ao criar curso" }
-    }
-
-    console.log("Curso criado com sucesso:", data)
-    return { success: true, message: "Curso criado com sucesso!", data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao criar curso (PG):", error)
     return { success: false, message: "Erro inesperado ao criar curso" }
   }
 }
 
 export async function buscarCursosDoInstrutor(instrutorId: string, pagina = 1, itensPorPagina = 12) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const offset = (pagina - 1) * itensPorPagina
 
-    // Calcular o offset para paginação
-    const offset = (pagina - 1) * itensPorPagina
+      // Total de cursos
+      const countQuery = `
+        SELECT COUNT(*)::int AS total
+        FROM rarcursos.cursos
+        WHERE instrutor_id = $1
+      `
+      const countResult = await client.query(countQuery, [instrutorId])
+      const totalCursos = countResult.rows?.[0]?.total ?? 0
 
-    // Buscar cursos com paginação
-    const { data, error, count } = await supabase
-      .from("cursos")
-      .select("*", { count: "exact" })
-      .eq("instrutor_id", instrutorId)
-      .order("criado_em", { ascending: false })
-      .range(offset, offset + itensPorPagina - 1)
+      // Lista paginada
+      const listQuery = `
+        SELECT id, titulo, descricao, nivel, ativo, imagem_url, duracao_total, criado_em, atualizado_em
+        FROM rarcursos.cursos
+        WHERE instrutor_id = $1
+        ORDER BY criado_em DESC
+        LIMIT $2 OFFSET $3
+      `
+      const listResult = await client.query(listQuery, [instrutorId, itensPorPagina, offset])
 
-    if (error) {
-      console.error("Erro ao buscar cursos:", error)
-      return { success: false, message: "Erro ao buscar cursos", data: [], totalCursos: 0 }
+      return { success: true, data: listResult.rows || [], totalCursos }
+    } finally {
+      client.release()
     }
-
-    return { success: true, data: data || [], totalCursos: count || 0 }
   } catch (error) {
-    console.error("Erro inesperado:", error)
-    return { success: false, message: "Erro inesperado", data: [], totalCursos: 0 }
+    console.error("Erro ao buscar cursos (PG):", error)
+    return { success: false, message: "Erro ao buscar cursos", data: [], totalCursos: 0 }
   }
 }
 
 export async function atualizarStatusCurso(cursoId: string, ativo: boolean, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Verificar posse do curso
+      const checkQuery = `SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1 LIMIT 1`
+      const checkRes = await client.query(checkQuery, [cursoId])
+      const curso = checkRes.rows?.[0]
+      if (!curso) {
+        return { success: false, message: "Curso não encontrado" }
+      }
+      if (curso.instrutor_id !== instrutorId) {
+        return { success: false, message: "Sem permissão para atualizar este curso" }
+      }
 
-    // Verificar se o curso pertence ao instrutor
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("instrutor_id")
-      .eq("id", cursoId)
-      .single()
-
-    if (cursoError || !curso) {
-      console.error("Erro ao buscar curso:", cursoError)
-      return { success: false, message: "Curso não encontrado" }
+      // Atualizar status
+      const updQuery = `UPDATE rarcursos.cursos SET ativo = $1, atualizado_em = NOW() WHERE id = $2`
+      await client.query(updQuery, [ativo, cursoId])
+      return { success: true, message: "Status atualizado com sucesso!" }
+    } finally {
+      client.release()
     }
-
-    if (curso.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para atualizar este curso" }
-    }
-
-    // Atualizar o status do curso
-    const { error } = await supabase.from("cursos").update({ ativo }).eq("id", cursoId)
-
-    if (error) {
-      console.error("Erro ao atualizar status do curso:", error)
-      return { success: false, message: "Erro ao atualizar status do curso" }
-    }
-
-    return { success: true, message: "Status atualizado com sucesso!" }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao atualizar status (PG):", error)
     return { success: false, message: "Erro inesperado ao atualizar status" }
   }
 }
@@ -251,32 +246,29 @@ export async function uploadVideoMinio(
 
 export async function buscarCursoPorId(cursoId: string, instrutorId: string) {
   console.log("🚀 FUNÇÃO CHAMADA - buscarCursoPorId:", { cursoId, instrutorId });
-  
+
   try {
-    console.log("🔍 Iniciando busca do curso...");
-    
-    const supabase = createServerSupabaseClient()
-    console.log("📡 Cliente Supabase criado");
+    const client = await pool.connect()
+    try {
+      const query = `
+        SELECT id, titulo, descricao, nivel, ativo, imagem_url, duracao_total, criado_em, atualizado_em, instrutor_id
+        FROM rarcursos.cursos
+        WHERE id = $1 AND instrutor_id = $2
+        LIMIT 1
+      `
+      const result = await client.query(query, [cursoId, instrutorId])
+      const data = result.rows?.[0] || null
 
-    console.log("🔎 Executando query no Supabase...");
-    const { data, error } = await supabase
-      .from("cursos")
-      .select("*")
-      .eq("id", cursoId)
-      .eq("instrutor_id", instrutorId)
-      .single()
+      if (!data) {
+        return { success: false, message: "Curso não encontrado", data: null }
+      }
 
-    console.log("📊 Resultado da query:", { data: !!data, error: !!error });
-
-    if (error) {
-      console.error("❌ Erro ao buscar curso:", error)
-      return { success: false, message: "Curso não encontrado", data: null }
+      return { success: true, data }
+    } finally {
+      client.release()
     }
-
-    console.log("✅ Curso encontrado com sucesso:", data?.titulo);
-    return { success: true, data }
   } catch (error) {
-    console.error("💥 Erro inesperado na função:", error)
+    console.error("💥 Erro inesperado ao buscar curso (PG):", error)
     return { success: false, message: "Erro inesperado ao buscar curso", data: null }
   }
 }
@@ -288,62 +280,52 @@ export async function editarCurso(cursoId: string, cursoData: CursoData) {
       return { success: false, message: "ID do instrutor é obrigatório" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Verificar se o curso existe e pertence ao instrutor
+      const checkQuery = `
+        SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1 LIMIT 1
+      `
+      const checkRes = await client.query(checkQuery, [cursoId])
+      const cursoExistente = checkRes.rows?.[0]
 
-    // Verificar se o curso existe e pertence ao instrutor
-    const { data: cursoExistente, error: cursoError } = await supabase
-      .from("cursos")
-      .select("instrutor_id")
-      .eq("id", cursoId)
-      .single()
+      if (!cursoExistente) {
+        return { success: false, message: "Curso não encontrado" }
+      }
 
-    if (cursoError || !cursoExistente) {
-      console.error("Erro ao buscar curso:", cursoError)
-      return { success: false, message: "Curso não encontrado" }
+      if (cursoExistente.instrutor_id !== cursoData.instrutor_id) {
+        return { success: false, message: "Sem permissão para editar este curso" }
+      }
+
+      // Atualizar curso
+      const updateQuery = `
+        UPDATE rarcursos.cursos
+        SET titulo = $1,
+            descricao = $2,
+            nivel = $3,
+            ativo = $4,
+            imagem_url = $5,
+            duracao_total = $6,
+            atualizado_em = NOW()
+        WHERE id = $7
+        RETURNING id, titulo, descricao, nivel, ativo, imagem_url, duracao_total, criado_em, atualizado_em, instrutor_id
+      `
+      const params = [
+        cursoData.titulo,
+        cursoData.descricao,
+        cursoData.nivel,
+        cursoData.ativo,
+        cursoData.imagem_url ?? null,
+        typeof cursoData.duracao_total === 'number' ? cursoData.duracao_total : null,
+        cursoId
+      ]
+      const updateRes = await client.query(updateQuery, params)
+      const data = updateRes.rows?.[0]
+
+      return { success: true, message: "Curso editado com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (cursoExistente.instrutor_id !== cursoData.instrutor_id) {
-      return { success: false, message: "Sem permissão para editar este curso" }
-    }
-
-    // Verificar se o usuário existe e tem permissão
-    const { data: user, error: userError } = await supabase
-      .from("users")
-      .select("uid, perfis")
-      .eq("uid", cursoData.instrutor_id)
-      .single()
-
-    if (userError || !user) {
-      console.error("Erro ao buscar usuário:", userError)
-      return { success: false, message: "Usuário não encontrado" }
-    }
-
-    if (user.perfis !== "instrutor" && user.perfis !== "admin") {
-      return { success: false, message: "Sem permissão para editar cursos" }
-    }
-
-    const { data, error } = await supabase
-      .from("cursos")
-      .update({
-        titulo: cursoData.titulo,
-        descricao: cursoData.descricao,
-        nivel: cursoData.nivel,
-        ativo: cursoData.ativo,
-        imagem_url: cursoData.imagem_url,
-        duracao_total: cursoData.duracao_total,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", cursoId)
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao editar curso:", error)
-      return { success: false, message: "Erro ao editar curso" }
-    }
-
-    console.log("Curso editado com sucesso:", data)
-    return { success: true, message: "Curso editado com sucesso!", data }
   } catch (error) {
     console.error("Erro inesperado:", error)
     return { success: false, message: "Erro inesperado ao editar curso" }

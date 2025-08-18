@@ -1,27 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-// Redirects to a short-lived signed URL for an avatar stored in Supabase Storage
-// Usage: /api/avatar/<relative-path-do-arquivo>
+// TODO: Implementar storage de avatars com PostgreSQL/File System
+// Por enquanto, retorna um avatar padrão ou erro 404
 export async function GET(req: NextRequest) {
   const prefix = "/api/avatar/";
   const relativePath = decodeURIComponent(
     req.nextUrl.pathname.replace(prefix, "")
   );
 
-  const supabase = createServerSupabaseClient();
-  // Gera URL válida por 1 hora (ajuste se necessário)
-  const { data, error } = await supabase
-    .storage
-    .from("ead")
-    .createSignedUrl(relativePath, 60 * 60);
-
-  if (error || !data?.signedUrl) {
+  try {
+    // TODO: Implementar busca de avatar no sistema de arquivos ou storage
+    // Por enquanto, retorna um avatar padrão do Gravatar ou erro 404
+    
+    console.log("Avatar solicitado:", relativePath);
+    
+    // Retornar um avatar padrão do Gravatar como fallback
+    const defaultAvatarUrl = "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y&s=200";
+    
+    return NextResponse.redirect(defaultAvatarUrl, 302);
+    
+  } catch (error) {
+    console.error("Erro ao buscar avatar:", error);
     return NextResponse.json(
-      { error: error?.message ?? "Erro ao gerar URL assinada" },
-      { status: 500 }
+      { error: "Avatar não encontrado" },
+      { status: 404 }
     );
   }
-
-  return NextResponse.redirect(data.signedUrl, 302);
 }

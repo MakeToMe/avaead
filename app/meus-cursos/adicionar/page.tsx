@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch"
 import { ArrowLeft, Upload, X, Clock, PlusCircle } from "lucide-react"
 import { criarCurso, uploadImagemMinio } from "../actions"
 import type { CursoData } from "../actions"
-import { getCurrentClientUser } from "@/lib/auth-client"
+import { getCurrentClientUserAsync } from "@/lib/auth-client"
 import { useToast } from "@/hooks/use-toast"
 
 export default function AdicionarCursoPage() {
@@ -77,8 +77,8 @@ export default function AdicionarCursoPage() {
     setLoading(true)
 
     try {
-      // Pegar o usuário atual
-      const currentUser = getCurrentClientUser()
+      // Pegar o usuário atual (async para garantir carregamento)
+      const currentUser = await getCurrentClientUserAsync()
       if (!currentUser?.uid) {
         toast({
           variant: "destructive",

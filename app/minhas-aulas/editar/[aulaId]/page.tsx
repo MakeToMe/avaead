@@ -110,6 +110,7 @@ export default function EditarAulaPage() {
   const [loadingModulos, setLoadingModulos] = useState(false)
   const [filePreview, setFilePreview] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [exibirPermissoes, setExibirPermissoes] = useState<boolean>(true)
 
   // Estados para novo módulo
   const [novoModulo, setNovoModulo] = useState("")
@@ -175,8 +176,10 @@ export default function EditarAulaPage() {
       }
       
       console.log('✅ Usuário autenticado, carregando dados...')
-      await carregarDadosAula()
-      await carregarPermissoes()
+      const resultado = await carregarDadosAula()
+      if (resultado && (resultado as any).exibirPermissoes) {
+        await carregarPermissoes()
+      }
     }
     carregarTudo()
   }, [aulaId, authLoading, isAuthenticated, user])
@@ -238,7 +241,7 @@ export default function EditarAulaPage() {
   const carregarDadosAula = async () => {
     if (!user?.uid) {
       console.log('❌ Usuário não autenticado, aguardando...')
-      return
+      return { success: false as const }
     }
 
     console.log('🔄 Carregando dados da aula:', aulaId, 'usuário:', user.uid)
@@ -258,12 +261,12 @@ export default function EditarAulaPage() {
           modulo_id: aula.modulo_id,
           titulo: aula.titulo,
           descricao: aula.descricao || "",
-          tipo: aula.tipo,
+          tipo: aula.tipo || "video",
           conteudo: aula.conteudo || "",
+          media_url: aula.media_url || "",
           duracao_horas: duracaoHoras,
           duracao_minutos: duracaoMinutos,
           ativo: aula.ativo,
-          media_url: aula.media_url || "",
         })
 
         // Se há arquivo, mostrar preview
@@ -272,14 +275,11 @@ export default function EditarAulaPage() {
           setFilePreview(fileName)
         }
 
-        // Garantir que o editor seja atualizado após o carregamento
-        setTimeout(() => {
-          if (editorRef.current && aula.conteudo) {
-            editorRef.current.innerHTML = aula.conteudo
-          }
-        }, 100)
-        
-        console.log('✅ Dados da aula carregados com sucesso')
+        // Definir se permissões devem ser exibidas: apenas para aulas privadas ou ao vivo
+        const deveExibir = Boolean(aula.privada || aula.ao_vivo)
+        setExibirPermissoes(deveExibir)
+
+        return { success: true as const, exibirPermissoes: deveExibir }
       } else {
         console.error('❌ Falha ao carregar aula:', result.message)
         toast({
@@ -288,6 +288,7 @@ export default function EditarAulaPage() {
           description: result.message || "Aula não encontrada",
         })
         router.push("/minhas-aulas")
+        return { success: false as const }
       }
     } catch (error) {
       console.error("❌ Erro ao carregar aula:", error)
@@ -296,6 +297,7 @@ export default function EditarAulaPage() {
         title: "Erro inesperado",
         description: "Erro inesperado ao carregar aula",
       })
+      return { success: false as const }
     } finally {
       console.log('🏁 Finalizando carregamento da aula')
       setLoadingAula(false)
@@ -680,8 +682,8 @@ export default function EditarAulaPage() {
         // Upload direto para MinIO
         const uploadResult =
           formData.tipo === "video"
-            ? await uploadVideoMinio(selectedFile, currentUser.uid)
-            : await uploadPdfMinio(selectedFile, currentUser.uid)
+            ? await uploadVideoMinio(selectedFile, user.uid)
+            : await uploadPdfMinio(selectedFile, user.uid)
 
         setUploadingFile(false)
 
@@ -780,54 +782,58 @@ export default function EditarAulaPage() {
     return null
   }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 text-white">
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="mb-8">
-          <Button
-            onClick={() => router.push("/minhas-aulas")}
-            variant="ghost"
-            className="text-slate-300 hover:text-white hover:bg-slate-700/50 mb-4 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Voltar para Minhas Aulas
-          </Button>
+  
 
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-blue-400 bg-clip-text text-transparent">
-            Editar Aula
-          </h1>
-          <p className="text-slate-400 mt-2">Edite os dados da sua aula</p>
-        </div>
+return (
+  <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 text-white">
+    <div className="container mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="mb-8">
+        <Button
+          onClick={() => router.push("/minhas-aulas")}
+          variant="ghost"
+          className="text-slate-300 hover:text-white hover:bg-slate-700/50 mb-4 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4 mr-2" />
+          Voltar para Minhas Aulas
+        </Button>
 
-        {/* Tabs para Edição e Gerenciamento */}
-        <div className="max-w-4xl mx-auto bg-gradient-to-br from-slate-800/95 to-gray-900/95 border border-slate-700/50 rounded-lg shadow-xl">
-          <Tabs defaultValue="editar" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 bg-slate-800/50 border-b border-slate-700/50">
-              <TabsTrigger 
-                value="editar" 
-                className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
-              >
-                <PlayCircle className="w-4 h-4 mr-2" />
-                Editar Aula
-              </TabsTrigger>
+        <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-blue-400 bg-clip-text text-transparent">
+          Editar Aula
+        </h1>
+        <p className="text-slate-400 mt-2">Edite os dados da sua aula</p>
+      </div>
+
+      {/* Tabs para Edição e Gerenciamento */}
+      <div className="max-w-4xl mx-auto bg-gradient-to-br from-slate-800/95 to-gray-900/95 border border-slate-700/50 rounded-lg shadow-xl">
+        <Tabs defaultValue="editar" className="w-full">
+          <TabsList className={`grid w-full ${exibirPermissoes ? 'grid-cols-2' : 'grid-cols-1'} bg-slate-800/50 border-b border-slate-700/50`}>
+            <TabsTrigger 
+              value="editar" 
+              className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+            >
+              <PlayCircle className="w-4 h-4 mr-2" />
+              Editar Aula
+            </TabsTrigger>
+            {exibirPermissoes && (
               <TabsTrigger 
                 value="permissoes"
                 className="data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
               >
-                <Shield className="w-4 h-4 mr-2" />
+                <Users className="w-4 h-4 mr-2" />
                 Gerenciar Permissões
               </TabsTrigger>
-            </TabsList>
+            )}
+          </TabsList>
 
-            {/* Aba de Edição */}
-            <TabsContent value="editar" className="p-6">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-xl text-white flex items-center gap-2 mb-4">
-                    <PlayCircle className="w-5 h-5 text-indigo-400" />
-                    Informações da Aula
-                  </h3>
+          {/* Aba de Edição */}
+          <TabsContent value="editar" className="p-6">
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-xl text-white flex items-center gap-2 mb-4">
+                  <PlayCircle className="w-5 h-5 text-indigo-400" />
+                  Informações da Aula
+                </h3>
                 </div>
             <form onSubmit={handleSubmit} className="space-y-6">
               {/* Curso */}
@@ -1322,177 +1328,157 @@ export default function EditarAulaPage() {
             </TabsContent>
 
             {/* Aba de Permissões */}
-            <TabsContent value="permissoes" className="p-6">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-xl text-white flex items-center gap-2 mb-2">
-                    <Shield className="w-5 h-5 text-indigo-400" />
-                    Gerenciar Permissões da Aula
-                  </h3>
-                  <p className="text-slate-400 text-sm mb-6">
-                    Gerencie quem pode acessar esta aula específica. As permissões aqui são apenas para esta aula.
-                  </p>
-                </div>
-
-                {loadingPermissoes ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400"></div>
-                  </div>
-                ) : permissoes ? (
-                  <div className="space-y-6">
-                    {/* Informações da Aula */}
-                    <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
-                      <h4 className="text-white font-medium mb-2">{permissoes.aula.titulo}</h4>
-                      <div className="flex gap-2">
-                        {permissoes.aula.privada && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                            🔒 Privada
-                          </span>
-                        )}
-                        {permissoes.aula.ao_vivo && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                            🔴 Ao Vivo
-                          </span>
-                        )}
-                        {!permissoes.aula.privada && !permissoes.aula.ao_vivo && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            🌐 Pública
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Estatísticas */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Users className="w-4 h-4 text-green-400" />
-                          <span className="text-slate-300 text-sm">Com Acesso</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_com_acesso}</div>
-                      </div>
-                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Users className="w-4 h-4 text-yellow-400" />
-                          <span className="text-slate-300 text-sm">Sem Acesso</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_sem_acesso}</div>
-                      </div>
-                      <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Shield className="w-4 h-4 text-blue-400" />
-                          <span className="text-slate-300 text-sm">Convites Específicos</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white">{permissoes.estatisticas.convites_especificos}</div>
-                      </div>
-                    </div>
-
-                    {/* Alunos com Acesso */}
-                    {permissoes.alunos_com_acesso.length > 0 && (
-                      <div>
-                        <h4 className="text-white font-medium mb-4 flex items-center gap-2">
-                          <Eye className="w-4 h-4 text-green-400" />
-                          Alunos com Acesso ({permissoes.alunos_com_acesso.length})
-                        </h4>
-                        <div className="space-y-2">
-                          {permissoes.alunos_com_acesso.map((aluno: any) => (
-                            <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 bg-gradient-to-br from-green-600 to-emerald-600 rounded-full flex items-center justify-center">
-                                  <span className="text-white text-sm font-medium">
-                                    {aluno.nome.charAt(0).toUpperCase()}
-                                  </span>
-                                </div>
-                                <div>
-                                  <div className="text-white font-medium">{aluno.nome}</div>
-                                  <div className="text-slate-400 text-sm">{aluno.email}</div>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                                  aluno.tipo_acesso === 'convidado_curso' 
-                                    ? 'bg-blue-100 text-blue-800' 
-                                    : 'bg-purple-100 text-purple-800'
-                                }`}>
-                                  {aluno.tipo_acesso === 'convidado_curso' ? 'Acesso Total' : 'Convite Específico'}
-                                </span>
-                                {aluno.tipo_acesso !== 'convidado_curso' && (
-                                  <Button
-                                    onClick={() => handleRemoverPermissao(aluno.aluno_id)}
-                                    size="sm"
-                                    variant="outline"
-                                    className="text-red-400 border-red-400 hover:bg-red-400 hover:text-white"
-                                  >
-                                    Remover
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Alunos sem Acesso */}
-                    {permissoes.alunos_sem_acesso.length > 0 && (
-                      <div>
-                        <h4 className="text-white font-medium mb-4 flex items-center gap-2">
-                          <Users className="w-4 h-4 text-yellow-400" />
-                          Alunos sem Acesso ({permissoes.alunos_sem_acesso.length})
-                        </h4>
-                        <div className="space-y-2">
-                          {permissoes.alunos_sem_acesso.map((aluno: any) => (
-                            <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 bg-gradient-to-br from-gray-600 to-slate-600 rounded-full flex items-center justify-center">
-                                  <span className="text-white text-sm font-medium">
-                                    {aluno.nome.charAt(0).toUpperCase()}
-                                  </span>
-                                </div>
-                                <div>
-                                  <div className="text-white font-medium">{aluno.nome}</div>
-                                  <div className="text-slate-400 text-sm">{aluno.email}</div>
-                                  <div className="text-slate-500 text-xs">
-                                    Progresso: {aluno.progresso_percentual}%
-                                  </div>
-                                </div>
-                              </div>
-                              <Button
-                                onClick={() => handleAdicionarPermissao(aluno)}
-                                size="sm"
-                                className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
-                              >
-                                <Shield className="w-4 h-4 mr-2" />
-                                Conceder Acesso
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Mensagem quando não há alunos */}
-                    {permissoes.alunos_sem_acesso.length === 0 && permissoes.alunos_com_acesso.length === 0 && (
-                      <div className="text-center py-8">
-                        <Users className="w-12 h-12 text-slate-600 mx-auto mb-4" />
-                        <h4 className="text-slate-400 font-medium mb-2">Nenhum aluno matriculado</h4>
-                        <p className="text-slate-500 text-sm">
-                          Não há alunos matriculados neste curso ainda.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <Shield className="w-12 h-12 text-slate-600 mx-auto mb-4" />
-                    <h4 className="text-slate-400 font-medium mb-2">Erro ao carregar permissões</h4>
-                    <p className="text-slate-500 text-sm">
-                      Não foi possível carregar as informações de permissões.
+            {exibirPermissoes && (
+              <TabsContent value="permissoes" className="p-6">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-xl text-white flex items-center gap-2 mb-2">
+                      <Shield className="w-5 h-5 text-indigo-400" />
+                      Gerenciar Permissões da Aula
+                    </h3>
+                    <p className="text-slate-400 text-sm mb-6">
+                      Gerencie quem pode acessar esta aula específica. As permissões aqui são apenas para esta aula.
                     </p>
                   </div>
-                )}
-              </div>
-            </TabsContent>
+
+                  {loadingPermissoes ? (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400"></div>
+                    </div>
+                  ) : permissoes ? (
+                    <div className="space-y-6">
+                      {/* Estatísticas */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Users className="w-4 h-4 text-green-400" />
+                            <span className="text-slate-300 text-sm">Com Acesso</span>
+                          </div>
+                          <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_com_acesso}</div>
+                        </div>
+                        <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Users className="w-4 h-4 text-yellow-400" />
+                            <span className="text-slate-300 text-sm">Sem Acesso</span>
+                          </div>
+                          <div className="text-2xl font-bold text-white">{permissoes.estatisticas.total_sem_acesso}</div>
+                        </div>
+                        <div className="bg-slate-800/30 rounded-lg p-4 border border-slate-700/50">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Shield className="w-4 h-4 text-blue-400" />
+                            <span className="text-slate-300 text-sm">Convites Específicos</span>
+                          </div>
+                          <div className="text-2xl font-bold text-white">{permissoes.estatisticas.convites_especificos}</div>
+                        </div>
+                      </div>
+
+                      {/* Alunos com Acesso */}
+                      {permissoes.alunos_com_acesso.length > 0 && (
+                        <div>
+                          <h4 className="text-white font-medium mb-4 flex items-center gap-2">
+                            <Eye className="w-4 h-4 text-green-400" />
+                            Alunos com Acesso ({permissoes.alunos_com_acesso.length})
+                          </h4>
+                          <div className="space-y-2">
+                            {permissoes.alunos_com_acesso.map((aluno: any) => (
+                              <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 bg-gradient-to-br from-green-600 to-emerald-600 rounded-full flex items-center justify-center">
+                                    <span className="text-white text-sm font-medium">
+                                      {aluno.nome.charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <div className="text-white font-medium">{aluno.nome}</div>
+                                    <div className="text-slate-400 text-sm">{aluno.email}</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                                    aluno.tipo_acesso === 'convidado_curso' 
+                                      ? 'bg-blue-100 text-blue-800' 
+                                      : 'bg-purple-100 text-purple-800'
+                                  }`}>
+                                    {aluno.tipo_acesso === 'convidado_curso' ? 'Acesso Total' : 'Convite Específico'}
+                                  </span>
+                                  {aluno.tipo_acesso !== 'convidado_curso' && (
+                                    <Button
+                                      onClick={() => handleRemoverPermissao(aluno.aluno_id)}
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-red-400 border-red-400 hover:bg-red-400 hover:text-white"
+                                    >
+                                      Remover
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Alunos sem Acesso */}
+                      {permissoes.alunos_sem_acesso.length > 0 && (
+                        <div>
+                          <h4 className="text-white font-medium mb-4 flex items-center gap-2">
+                            <Users className="w-4 h-4 text-yellow-400" />
+                            Alunos sem Acesso ({permissoes.alunos_sem_acesso.length})
+                          </h4>
+                          <div className="space-y-2">
+                            {permissoes.alunos_sem_acesso.map((aluno: any) => (
+                              <div key={aluno.aluno_id} className="flex items-center justify-between p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 bg-gradient-to-br from-gray-600 to-slate-600 rounded-full flex items-center justify-center">
+                                    <span className="text-white text-sm font-medium">
+                                      {aluno.nome.charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <div className="text-white font-medium">{aluno.nome}</div>
+                                    <div className="text-slate-400 text-sm">{aluno.email}</div>
+                                    <div className="text-slate-500 text-xs">
+                                      Progresso: {aluno.progresso_percentual}%
+                                    </div>
+                                  </div>
+                                </div>
+                                <Button
+                                  onClick={() => handleAdicionarPermissao(aluno)}
+                                  size="sm"
+                                  className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
+                                >
+                                  <Shield className="w-4 h-4 mr-2" />
+                                  Conceder Acesso
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Mensagem quando não há alunos */}
+                      {permissoes.alunos_sem_acesso.length === 0 && permissoes.alunos_com_acesso.length === 0 && (
+                        <div className="text-center py-8">
+                          <Users className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+                          <h4 className="text-slate-400 font-medium mb-2">Nenhum aluno matriculado</h4>
+                          <p className="text-slate-500 text-sm">
+                            Não há alunos matriculados neste curso ainda.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <Shield className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+                      <h4 className="text-slate-400 font-medium mb-2">Erro ao carregar permissões</h4>
+                      <p className="text-slate-500 text-sm">
+                        Não foi possível carregar as informações de permissões.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+            )}
           </Tabs>
         </div>
 

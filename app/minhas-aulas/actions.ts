@@ -1,6 +1,17 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from 'pg'
+import type { MinioFileType } from "@/lib/minio-config"
+
+// Pool Postgres (mesma config usada em outras ações)
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false,
+})
 
 export interface ModuloData {
   curso_id: string
@@ -20,83 +31,69 @@ export interface AulaData {
   media_url?: string
   duracao?: number // em minutos
   ativo: boolean
+  privada?: boolean
+  ao_vivo?: boolean
 }
 
 // MÓDULOS
 export async function criarModulo(moduloData: ModuloData, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Verificar posse do curso
+      const checkCurso = await client.query(
+        `SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1 LIMIT 1`,
+        [moduloData.curso_id],
+      )
+      const curso = checkCurso.rows?.[0]
+      if (!curso) return { success: false, message: "Curso não encontrado" }
+      if (curso.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para criar módulos neste curso" }
 
-    // Verificar se o curso pertence ao instrutor
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("instrutor_id")
-      .eq("id", moduloData.curso_id)
-      .single()
-
-    if (cursoError || !curso) {
-      console.error("Erro ao buscar curso:", cursoError)
-      return { success: false, message: "Curso não encontrado" }
+      // Inserir módulo
+      const insert = await client.query(
+        `INSERT INTO rarcursos.modulos (curso_id, titulo, descricao, ordem, ativo, criado_em, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+         RETURNING id, curso_id, titulo, descricao, ordem, ativo, criado_em, atualizado_em`,
+        [moduloData.curso_id, moduloData.titulo, moduloData.descricao, moduloData.ordem, moduloData.ativo],
+      )
+      const data = insert.rows?.[0]
+      return { success: true, message: "Módulo criado com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (curso.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para criar módulos neste curso" }
-    }
-
-    const { data, error } = await supabase
-      .from("modulos")
-      .insert({
-        curso_id: moduloData.curso_id,
-        titulo: moduloData.titulo,
-        descricao: moduloData.descricao,
-        ordem: moduloData.ordem,
-        ativo: moduloData.ativo,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao criar módulo:", error)
-      return { success: false, message: "Erro ao criar módulo" }
-    }
-
-    console.log("Módulo criado com sucesso:", data)
-    return { success: true, message: "Módulo criado com sucesso!", data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao criar módulo (PG):", error)
     return { success: false, message: "Erro inesperado ao criar módulo" }
   }
 }
 
 export async function buscarModulosDoCurso(cursoId: string, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const check = await client.query(
+        `SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1 LIMIT 1`,
+        [cursoId],
+      )
+      const curso = check.rows?.[0]
+      if (!curso || curso.instrutor_id !== instrutorId) {
+        return { success: false, message: "Curso não encontrado ou sem permissão", data: [] }
+      }
 
-    // Verificar se o curso pertence ao instrutor
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("instrutor_id")
-      .eq("id", cursoId)
-      .single()
-
-    if (cursoError || !curso || curso.instrutor_id !== instrutorId) {
-      return { success: false, message: "Curso não encontrado ou sem permissão", data: [] }
+      const res = await client.query(
+        `SELECT id, curso_id, titulo, descricao, ordem, ativo, criado_em, atualizado_em
+         FROM rarcursos.modulos
+         WHERE curso_id = $1
+         ORDER BY ordem ASC`,
+        [cursoId],
+      )
+      return { success: true, data: res.rows || [] }
+    } finally {
+      client.release()
     }
-
-    const { data, error } = await supabase
-      .from("modulos")
-      .select("*")
-      .eq("curso_id", cursoId)
-      .order("ordem", { ascending: true })
-
-    if (error) {
-      console.error("Erro ao buscar módulos:", error)
-      return { success: false, message: "Erro ao buscar módulos", data: [] }
-    }
-
-    return { success: true, data: data || [] }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao buscar módulos (PG):", error)
     return { success: false, message: "Erro inesperado", data: [] }
   }
 }
@@ -104,47 +101,35 @@ export async function buscarModulosDoCurso(cursoId: string, instrutorId: string)
 // EDITAR NOME DO MÓDULO
 export async function editarNomeModulo(moduloId: string, novoNome: string, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Buscar curso do módulo e verificar posse
+      const mod = await client.query(
+        `SELECT m.id, m.curso_id, c.instrutor_id
+         FROM rarcursos.modulos m
+         JOIN rarcursos.cursos c ON c.id = m.curso_id
+         WHERE m.id = $1`,
+        [moduloId],
+      )
+      const modulo = mod.rows?.[0]
+      if (!modulo) return { success: false, message: "Módulo não encontrado" }
+      if (modulo.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para editar este módulo" }
 
-    // Verificar se o módulo existe e pertence ao instrutor
-    const { data: modulo, error: moduloError } = await supabase
-      .from("modulos")
-      .select(`
-        *,
-        cursos!inner(instrutor_id)
-      `)
-      .eq("id", moduloId)
-      .single()
-
-    if (moduloError || !modulo) {
-      console.error("Erro ao buscar módulo:", moduloError)
-      return { success: false, message: "Módulo não encontrado" }
+      const upd = await client.query(
+        `UPDATE rarcursos.modulos
+         SET titulo = $1, atualizado_em = NOW()
+         WHERE id = $2
+         RETURNING id, curso_id, titulo, descricao, ordem, ativo, criado_em, atualizado_em`,
+        [novoNome, moduloId],
+      )
+      const data = upd.rows?.[0]
+      return { success: true, message: "Nome do módulo editado com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (modulo.cursos.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para editar este módulo" }
-    }
-
-    // Atualizar o nome do módulo
-    const { data, error } = await supabase
-      .from("modulos")
-      .update({
-        titulo: novoNome,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", moduloId)
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao editar módulo:", error)
-      return { success: false, message: "Erro ao editar nome do módulo" }
-    }
-
-    console.log("Nome do módulo editado com sucesso:", data)
-    return { success: true, message: "Nome do módulo editado com sucesso!", data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao editar nome do módulo (PG):", error)
     return { success: false, message: "Erro inesperado ao editar nome do módulo" }
   }
 }
@@ -152,129 +137,142 @@ export async function editarNomeModulo(moduloId: string, novoNome: string, instr
 // AULAS
 export async function criarAula(aulaData: AulaData, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Verificar posse do curso
+      const checkCurso = await client.query(
+        `SELECT instrutor_id FROM rarcursos.cursos WHERE id = $1 LIMIT 1`,
+        [aulaData.curso_id],
+      )
+      const curso = checkCurso.rows?.[0]
+      if (!curso) return { success: false, message: "Curso não encontrado" }
+      if (curso.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para criar aulas neste curso" }
 
-    // Verificar se o curso pertence ao instrutor
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("instrutor_id")
-      .eq("id", aulaData.curso_id)
-      .single()
+      // Verificar módulo pertence ao curso
+      const checkModulo = await client.query(
+        `SELECT id, curso_id FROM rarcursos.modulos WHERE id = $1 LIMIT 1`,
+        [aulaData.modulo_id],
+      )
+      const modulo = checkModulo.rows?.[0]
+      if (!modulo || modulo.curso_id !== aulaData.curso_id)
+        return { success: false, message: "Módulo não encontrado ou não pertence ao curso" }
 
-    if (cursoError || !curso) {
-      console.error("Erro ao buscar curso:", cursoError)
-      return { success: false, message: "Curso não encontrado" }
+      // Inserir aula
+      const insert = await client.query(
+        `INSERT INTO rarcursos.aulas
+         (curso_id, modulo_id, titulo, descricao, tipo, conteudo, media_url, duracao, ativo, privada, ao_vivo, criado_em, atualizado_em)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, NOW(), NOW())
+         RETURNING id, curso_id, modulo_id, titulo, descricao, tipo, conteudo, media_url, duracao, ativo, privada, ao_vivo, criado_em, atualizado_em`,
+        [
+          aulaData.curso_id,
+          aulaData.modulo_id,
+          aulaData.titulo,
+          aulaData.descricao,
+          aulaData.tipo,
+          aulaData.conteudo,
+          aulaData.media_url ?? null,
+          typeof aulaData.duracao === 'number' ? aulaData.duracao : null,
+          aulaData.ativo,
+          aulaData.privada ?? false,
+          aulaData.ao_vivo ?? false,
+        ],
+      )
+      const data = insert.rows?.[0]
+
+      // Atualizações auxiliares
+      await atualizarDuracaoCurso(aulaData.curso_id)
+      await recalcularProgressoAlunos(aulaData.curso_id)
+
+      return { success: true, message: "Aula criada com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (curso.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para criar aulas neste curso" }
-    }
-
-    // Verificar se o módulo pertence ao curso
-    const { data: modulo, error: moduloError } = await supabase
-      .from("modulos")
-      .select("curso_id")
-      .eq("id", aulaData.modulo_id)
-      .single()
-
-    if (moduloError || !modulo || modulo.curso_id !== aulaData.curso_id) {
-      return { success: false, message: "Módulo não encontrado ou não pertence ao curso" }
-    }
-
-    const { data, error } = await supabase
-      .from("aulas")
-      .insert({
-        curso_id: aulaData.curso_id,
-        modulo_id: aulaData.modulo_id,
-        titulo: aulaData.titulo,
-        descricao: aulaData.descricao,
-        tipo: aulaData.tipo,
-        conteudo: aulaData.conteudo,
-        media_url: aulaData.media_url,
-        duracao: aulaData.duracao,
-        ativo: aulaData.ativo,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao criar aula:", error)
-      return { success: false, message: "Erro ao criar aula" }
-    }
-
-    // Atualizar duração total do curso
-    await atualizarDuracaoCurso(aulaData.curso_id)
-    await recalcularProgressoAlunos(aulaData.curso_id)
-
-    console.log("Aula criada com sucesso:", data)
-    return { success: true, message: "Aula criada com sucesso!", data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao criar aula (PG):", error)
     return { success: false, message: "Erro inesperado ao criar aula" }
   }
 }
 
-export async function buscarAulasDoInstrutor(instrutorId: string, pagina = 1, itensPorPagina = 6, cursoId?: string) {
+export async function buscarAulasDoInstrutor(
+  instrutorId: string,
+  pagina = 1,
+  itensPorPagina = 6,
+  cursoId?: string,
+) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const offset = (pagina - 1) * itensPorPagina
 
-    // Calcular o offset para paginação
-    const offset = (pagina - 1) * itensPorPagina
+      // Total
+      const countQuery = `
+        SELECT COUNT(a.id)::int AS total
+        FROM rarcursos.aulas a
+        JOIN rarcursos.cursos c ON c.id = a.curso_id
+        WHERE c.instrutor_id = $1
+        ${cursoId ? 'AND a.curso_id = $2' : ''}
+      `
+      const countRes = await client.query(countQuery, cursoId ? [instrutorId, cursoId] : [instrutorId])
+      const totalAulas = countRes.rows?.[0]?.total ?? 0
 
-    // Iniciar a query
-    let query = supabase
-      .from("aulas")
-      .select(
-        `
-        *,
-        cursos!inner(id, titulo, instrutor_id),
-        modulos!inner(id, titulo)
-      `,
-        { count: "exact" },
-      )
-      .eq("cursos.instrutor_id", instrutorId)
+      // Lista
+      const listQuery = `
+        SELECT a.id, a.titulo, a.descricao, a.tipo, a.ativo, a.duracao, a.criado_em, a.modulo_id, a.curso_id,
+               c.id AS cursos_id, c.titulo AS cursos_titulo,
+               m.id AS modulos_id, m.titulo AS modulos_titulo
+        FROM rarcursos.aulas a
+        JOIN rarcursos.cursos c ON c.id = a.curso_id
+        JOIN rarcursos.modulos m ON m.id = a.modulo_id
+        WHERE c.instrutor_id = $1
+        ${cursoId ? 'AND a.curso_id = $2' : ''}
+        ORDER BY a.criado_em DESC
+        LIMIT $${cursoId ? 3 : 2} OFFSET $${cursoId ? 4 : 3}
+      `
+      const params = cursoId
+        ? [instrutorId, cursoId, itensPorPagina, offset]
+        : [instrutorId, itensPorPagina, offset]
+      const listRes = await client.query(listQuery, params)
 
-    // Adicionar filtro por curso se especificado
-    if (cursoId) {
-      query = query.eq("curso_id", cursoId)
+      // Mapear para shape esperado com nested cursos e modulos
+      const data = (listRes.rows || []).map((r: any) => ({
+        id: r.id,
+        titulo: r.titulo,
+        descricao: r.descricao,
+        tipo: r.tipo,
+        ativo: r.ativo,
+        duracao: r.duracao,
+        criado_em: r.criado_em,
+        modulo_id: r.modulo_id,
+        curso_id: r.curso_id,
+        cursos: { id: r.cursos_id, titulo: r.cursos_titulo },
+        modulos: { id: r.modulos_id, titulo: r.modulos_titulo },
+      }))
+
+      return { success: true, data, totalAulas }
+    } finally {
+      client.release()
     }
-
-    // Finalizar a query com ordenação por data de criação (mais recente primeiro) e paginação
-    const { data, error, count } = await query
-      .order("criado_em", { ascending: false })
-      .range(offset, offset + itensPorPagina - 1)
-
-    if (error) {
-      console.error("Erro ao buscar aulas:", error)
-      return { success: false, message: "Erro ao buscar aulas", data: [], totalAulas: 0 }
-    }
-
-    return { success: true, data: data || [], totalAulas: count || 0 }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao buscar aulas (PG):", error)
     return { success: false, message: "Erro inesperado", data: [], totalAulas: 0 }
   }
 }
 
 export async function buscarCursosDoInstrutor(instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
-
-    const { data, error } = await supabase
-      .from("cursos")
-      .select("id, titulo")
-      .eq("instrutor_id", instrutorId)
-      .eq("ativo", true)
-      .order("titulo", { ascending: true })
-
-    if (error) {
-      console.error("Erro ao buscar cursos:", error)
-      return { success: false, message: "Erro ao buscar cursos", data: [] }
+    const client = await pool.connect()
+    try {
+      const res = await client.query(
+        `SELECT id, titulo FROM rarcursos.cursos WHERE instrutor_id = $1 AND ativo = true ORDER BY titulo ASC`,
+        [instrutorId],
+      )
+      return { success: true, data: res.rows || [] }
+    } finally {
+      client.release()
     }
-
-    return { success: true, data: data || [] }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao buscar cursos (PG):", error)
     return { success: false, message: "Erro inesperado", data: [] }
   }
 }
@@ -282,73 +280,44 @@ export async function buscarCursosDoInstrutor(instrutorId: string) {
 // Adicionar nova função para buscar cursos com contagem de aulas
 export async function buscarCursosComAulas(instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
-
-    // Primeiro buscar todos os cursos do instrutor
-    const { data: cursos, error: cursosError } = await supabase
-      .from("cursos")
-      .select("id, titulo")
-      .eq("instrutor_id", instrutorId)
-      .eq("ativo", true)
-      .order("titulo", { ascending: true })
-
-    if (cursosError) {
-      console.error("Erro ao buscar cursos:", cursosError)
-      return { success: false, message: "Erro ao buscar cursos", data: [] }
+    const client = await pool.connect()
+    try {
+      const res = await client.query(
+        `SELECT c.id, c.titulo, COALESCE(COUNT(a.id), 0)::int AS "totalAulas"
+         FROM rarcursos.cursos c
+         LEFT JOIN rarcursos.aulas a ON a.curso_id = c.id AND a.ativo = true
+         WHERE c.instrutor_id = $1 AND c.ativo = true
+         GROUP BY c.id, c.titulo
+         ORDER BY c.titulo ASC`,
+        [instrutorId],
+      )
+      return { success: true, data: res.rows || [] }
+    } finally {
+      client.release()
     }
-
-    // Para cada curso, buscar a contagem de aulas
-    const cursosComAulas = await Promise.all(
-      cursos.map(async (curso) => {
-        const { count, error: countError } = await supabase
-          .from("aulas")
-          .select("*", { count: "exact", head: true })
-          .eq("curso_id", curso.id)
-
-        if (countError) {
-          console.error(`Erro ao contar aulas do curso ${curso.id}:`, countError)
-          return { ...curso, totalAulas: 0 }
-        }
-
-        return { ...curso, totalAulas: count || 0 }
-      }),
-    )
-
-    return { success: true, data: cursosComAulas || [] }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao buscar cursos com aulas (PG):", error)
     return { success: false, message: "Erro inesperado", data: [] }
   }
 }
 
 // Função para atualizar duração total do curso
 async function atualizarDuracaoCurso(cursoId: string) {
+  const client = await pool.connect()
   try {
-    const supabase = createServerSupabaseClient()
-
-    // Somar durações de todas as aulas ativas do curso
-    const { data, error } = await supabase.from("aulas").select("duracao").eq("curso_id", cursoId).eq("ativo", true)
-
-    if (error) {
-      console.error("Erro ao buscar durações das aulas:", error)
-      return
-    }
-
-    const duracaoTotal = data?.reduce((total, aula) => total + (aula.duracao || 0), 0) || 0
-
-    // Atualizar duração total do curso
-    const { error: updateError } = await supabase
-      .from("cursos")
-      .update({ duracao_total: duracaoTotal })
-      .eq("id", cursoId)
-
-    if (updateError) {
-      console.error("Erro ao atualizar duração do curso:", updateError)
-    } else {
-      console.log(`Duração do curso ${cursoId} atualizada para ${duracaoTotal} minutos`)
-    }
+    const sumRes = await client.query(
+      `SELECT COALESCE(SUM(duracao), 0)::int AS total FROM rarcursos.aulas WHERE curso_id = $1 AND ativo = true`,
+      [cursoId],
+    )
+    const duracaoTotal = sumRes.rows?.[0]?.total ?? 0
+    await client.query(
+      `UPDATE rarcursos.cursos SET duracao_total = $1, atualizado_em = NOW() WHERE id = $2`,
+      [duracaoTotal, cursoId],
+    )
   } catch (error) {
-    console.error("Erro inesperado ao atualizar duração:", error)
+    console.error("Erro inesperado ao atualizar duração (PG):", error)
+  } finally {
+    client.release()
   }
 }
 
@@ -357,84 +326,45 @@ async function atualizarDuracaoCurso(cursoId: string) {
 
 // RECALCULAR PROGRESSO DOS ALUNOS
 async function recalcularProgressoAlunos(cursoId: string) {
+  const client = await pool.connect()
   try {
-    const supabase = createServerSupabaseClient()
+    // Matriculas ativas do curso
+    const matRes = await client.query(
+      `SELECT id, aluno_id FROM rarcursos.matriculas WHERE curso_id = $1 AND ativo = true`,
+      [cursoId],
+    )
+    const matriculas = matRes.rows || []
 
-    // Buscar todos os alunos matriculados no curso
-    const { data: matriculas, error: matriculasError } = await supabase
-      .from("matriculas")
-      .select("id, aluno_id")
-      .eq("curso_id", cursoId)
-      .eq("ativo", true)
+    // Duração total do curso (aulas ativas)
+    const totalRes = await client.query(
+      `SELECT COALESCE(SUM(duracao), 0)::int AS total FROM rarcursos.aulas WHERE curso_id = $1 AND ativo = true`,
+      [cursoId],
+    )
+    const duracaoTotalCurso = totalRes.rows?.[0]?.total ?? 0
+    if (duracaoTotalCurso === 0) return
 
-    if (matriculasError || !matriculas) {
-      console.error("Erro ao buscar matrículas:", matriculasError)
-      return
-    }
-
-    // Buscar duração total de todas as aulas ativas do curso
-    const { data: aulasAtivas, error: aulasError } = await supabase
-      .from("aulas")
-      .select("id, duracao")
-      .eq("curso_id", cursoId)
-      .eq("ativo", true)
-
-    if (aulasError || !aulasAtivas) {
-      console.error("Erro ao buscar aulas:", aulasError)
-      return
-    }
-
-    const duracaoTotalCurso = aulasAtivas.reduce((total, aula) => total + (aula.duracao || 0), 0)
-
-    if (duracaoTotalCurso === 0) {
-      console.log("Curso sem duração definida, mantendo progresso atual")
-      return
-    }
-
-    // Para cada aluno, recalcular o progresso baseado na duração
-    for (const matricula of matriculas) {
-      // Buscar aulas assistidas pelo aluno
-      const { data: progressoAulas, error: progressoError } = await supabase
-        .from("progresso_aulas")
-        .select(`
-          aula_id,
-          aulas!inner(duracao)
-        `)
-        .eq("matricula_id", matricula.id)
-        .eq("assistida", true)
-
-      if (progressoError) {
-        console.error("Erro ao buscar progresso:", progressoError)
-        continue
-      }
-
-      // Calcular duração total assistida
-      const duracaoAssistida = (progressoAulas || []).reduce((total, progresso) => {
-        return total + (progresso.aulas.duracao || 0)
-      }, 0)
-
-      // Calcular novo percentual baseado na duração
+    // Para cada matrícula, somar durações assistidas
+    for (const m of matriculas) {
+      const progRes = await client.query(
+        `SELECT COALESCE(SUM(a.duracao), 0)::int AS assistida
+         FROM rarcursos.progresso_aulas pa
+         JOIN rarcursos.aulas a ON a.id = pa.aula_id
+         WHERE pa.matricula_id = $1 AND pa.assistida = true`,
+        [m.id],
+      )
+      const duracaoAssistida = progRes.rows?.[0]?.assistida ?? 0
       const novoPercentual = Math.round((duracaoAssistida / duracaoTotalCurso) * 100)
-
-      // Atualizar progresso na tabela matriculas
-      const { error: updateError } = await supabase
-        .from("matriculas")
-        .update({
-          progresso_percentual: novoPercentual,
-          atualizado_em: new Date().toISOString(),
-        })
-        .eq("id", matricula.id)
-
-      if (updateError) {
-        console.error("Erro ao atualizar progresso:", updateError)
-      } else {
-        console.log(
-          `Progresso recalculado para usuário ${matricula.aluno_id}: ${novoPercentual}% (${duracaoAssistida}/${duracaoTotalCurso} min)`,
-        )
-      }
+      await client.query(
+        `UPDATE rarcursos.matriculas
+         SET progresso_percentual = $1, atualizado_em = NOW()
+         WHERE id = $2`,
+        [novoPercentual, m.id],
+      )
     }
   } catch (error) {
-    console.error("Erro inesperado ao recalcular progresso:", error)
+    console.error("Erro inesperado ao recalcular progresso (PG):", error)
+  } finally {
+    client.release()
   }
 }
 
@@ -449,7 +379,6 @@ export async function excluirArquivoMinio(url: string): Promise<{ success: boole
 
     // Importar funções de detecção e parsing
     const { detectStructureType, parseMinioUrl, getMinioConfig, getMinioUploadUrl, getMinioUserUploadUrl } = await import("@/lib/minio-config")
-    const { MinioFileType } = await import("@/lib/minio-config")
     
     // Detectar tipo de estrutura
     const structureType = detectStructureType(url)
@@ -466,7 +395,7 @@ export async function excluirArquivoMinio(url: string): Promise<{ success: boole
         'documentos': 'file', 
         'imagens': 'imagem'
       }
-      const minioFileType = tipoMap[parsedUrl.tipo] as MinioFileType
+      const minioFileType = tipoMap[parsedUrl.tipo]
       deleteUrl = getMinioUserUploadUrl(parsedUrl.userId, minioFileType, parsedUrl.fileName)
       
       console.log("🗑️ Excluindo com nova estrutura:", {
@@ -535,7 +464,6 @@ export async function uploadArquivoMinio(
 
     // Importar funções da nova estrutura
     const { getMinioUserUploadUrl, getMinioUserFileUrl } = await import("@/lib/minio-config")
-    const { MinioFileType } = await import("@/lib/minio-config")
 
     // Usar nova estrutura baseada em UID: rarcursos/[uid]/[tipo]/[arquivo]
     const uploadUrl = getMinioUserUploadUrl(userId, tipo as MinioFileType, fileName)
@@ -606,75 +534,77 @@ export async function uploadPdfMinio(
 // EDITAR AULA
 export async function editarAula(aulaId: string, aulaData: AulaData, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Buscar aula e verificar posse via curso
+      const aulaRes = await client.query(
+        `SELECT a.*, c.instrutor_id
+         FROM rarcursos.aulas a
+         JOIN rarcursos.cursos c ON c.id = a.curso_id
+         WHERE a.id = $1`,
+        [aulaId],
+      )
+      const aulaExistente = aulaRes.rows?.[0]
+      if (!aulaExistente) return { success: false, message: "Aula não encontrada" }
+      if (aulaExistente.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para editar esta aula" }
 
-    // Verificar se a aula existe e pertence ao instrutor
-    const { data: aulaExistente, error: aulaError } = await supabase
-      .from("aulas")
-      .select(`
-        *,
-        cursos!inner(instrutor_id)
-      `)
-      .eq("id", aulaId)
-      .single()
+      // Verificar módulo pertence ao curso
+      const modRes = await client.query(
+        `SELECT curso_id FROM rarcursos.modulos WHERE id = $1`,
+        [aulaData.modulo_id],
+      )
+      const modulo = modRes.rows?.[0]
+      if (!modulo || modulo.curso_id !== aulaData.curso_id)
+        return { success: false, message: "Módulo não encontrado ou não pertence ao curso" }
 
-    if (aulaError || !aulaExistente) {
-      console.error("Erro ao buscar aula:", aulaError)
-      return { success: false, message: "Aula não encontrada" }
+      // Excluir arquivo antigo se trocou URL
+      if (aulaData.media_url && aulaData.media_url !== aulaExistente.media_url && aulaExistente.media_url) {
+        try { await excluirArquivoMinio(aulaExistente.media_url) } catch (e) { console.warn('Falha ao excluir mídia antiga', e) }
+      }
+
+      // Atualizar
+      const upd = await client.query(
+        `UPDATE rarcursos.aulas SET
+           curso_id = $1,
+           modulo_id = $2,
+           titulo = $3,
+           descricao = $4,
+           tipo = $5,
+           conteudo = $6,
+           media_url = $7,
+           duracao = $8,
+           ativo = $9,
+           privada = $10,
+           ao_vivo = $11,
+           atualizado_em = NOW()
+         WHERE id = $12
+         RETURNING id, curso_id, modulo_id, titulo, descricao, tipo, conteudo, media_url, duracao, ativo, privada, ao_vivo, criado_em, atualizado_em`,
+        [
+          aulaData.curso_id,
+          aulaData.modulo_id,
+          aulaData.titulo,
+          aulaData.descricao,
+          aulaData.tipo,
+          aulaData.conteudo,
+          aulaData.media_url ?? null,
+          typeof aulaData.duracao === 'number' ? aulaData.duracao : null,
+          aulaData.ativo,
+          aulaData.privada ?? false,
+          aulaData.ao_vivo ?? false,
+          aulaId,
+        ],
+      )
+      const data = upd.rows?.[0]
+
+      await atualizarDuracaoCurso(aulaData.curso_id)
+
+      return { success: true, message: "Aula editada com sucesso!", data }
+    } finally {
+      client.release()
     }
-
-    if (aulaExistente.cursos.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para editar esta aula" }
-    }
-
-    // Verificar se o módulo pertence ao curso
-    const { data: modulo, error: moduloError } = await supabase
-      .from("modulos")
-      .select("curso_id")
-      .eq("id", aulaData.modulo_id)
-      .single()
-
-    if (moduloError || !modulo || modulo.curso_id !== aulaData.curso_id) {
-      return { success: false, message: "Módulo não encontrado ou não pertence ao curso" }
-    }
-
-    // Se há uma nova URL de mídia e é diferente da atual, excluir arquivo antigo
-    if (aulaData.media_url && aulaData.media_url !== aulaExistente.media_url && aulaExistente.media_url) {
-      console.log("🔄 Substituindo arquivo antigo por novo")
-      await excluirArquivoMinio(aulaExistente.media_url)
-    }
-
-    // Atualizar a aula
-    const { data, error } = await supabase
-      .from("aulas")
-      .update({
-        curso_id: aulaData.curso_id,
-        modulo_id: aulaData.modulo_id,
-        titulo: aulaData.titulo,
-        descricao: aulaData.descricao,
-        tipo: aulaData.tipo,
-        conteudo: aulaData.conteudo,
-        media_url: aulaData.media_url,
-        duracao: aulaData.duracao,
-        ativo: aulaData.ativo,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", aulaId)
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao editar aula:", error)
-      return { success: false, message: "Erro ao editar aula" }
-    }
-
-    // Atualizar duração total do curso
-    await atualizarDuracaoCurso(aulaData.curso_id)
-
-    console.log("Aula editada com sucesso:", data)
-    return { success: true, message: "Aula editada com sucesso!", data }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao editar aula (PG):", error)
     return { success: false, message: "Erro inesperado ao editar aula" }
   }
 }
@@ -682,48 +612,36 @@ export async function editarAula(aulaId: string, aulaData: AulaData, instrutorId
 // EXCLUIR AULA
 export async function excluirAula(aulaId: string, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Buscar aula e verificar posse via curso
+      const aulaRes = await client.query(
+        `SELECT a.id, a.media_url, a.curso_id, c.instrutor_id
+         FROM rarcursos.aulas a
+         JOIN rarcursos.cursos c ON c.id = a.curso_id
+         WHERE a.id = $1`,
+        [aulaId],
+      )
+      const aulaExistente = aulaRes.rows?.[0]
+      if (!aulaExistente) return { success: false, message: "Aula não encontrada" }
+      if (aulaExistente.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para excluir esta aula" }
 
-    // Verificar se a aula existe e pertence ao instrutor
-    const { data: aulaExistente, error: aulaError } = await supabase
-      .from("aulas")
-      .select(`
-        *,
-        cursos!inner(instrutor_id)
-      `)
-      .eq("id", aulaId)
-      .single()
+      // Excluir arquivo do MinIO se existir
+      if (aulaExistente.media_url) {
+        try { await excluirArquivoMinio(aulaExistente.media_url) } catch {}
+      }
 
-    if (aulaError || !aulaExistente) {
-      console.error("Erro ao buscar aula:", aulaError)
-      return { success: false, message: "Aula não encontrada" }
+      // Excluir registro
+      await client.query(`DELETE FROM rarcursos.aulas WHERE id = $1`, [aulaId])
+
+      await atualizarDuracaoCurso(aulaExistente.curso_id)
+      return { success: true, message: "Aula excluída com sucesso!" }
+    } finally {
+      client.release()
     }
-
-    if (aulaExistente.cursos.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para excluir esta aula" }
-    }
-
-    // Excluir arquivo do MinIO se existir
-    if (aulaExistente.media_url) {
-      console.log("🗑️ Excluindo arquivo da aula do MinIO")
-      await excluirArquivoMinio(aulaExistente.media_url)
-    }
-
-    // Excluir a aula
-    const { error } = await supabase.from("aulas").delete().eq("id", aulaId)
-
-    if (error) {
-      console.error("Erro ao excluir aula:", error)
-      return { success: false, message: "Erro ao excluir aula" }
-    }
-
-    // Atualizar duração total do curso
-    await atualizarDuracaoCurso(aulaExistente.curso_id)
-
-    console.log("Aula excluída com sucesso:", aulaId)
-    return { success: true, message: "Aula excluída com sucesso!" }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao excluir aula (PG):", error)
     return { success: false, message: "Erro inesperado ao excluir aula" }
   }
 }
@@ -731,30 +649,29 @@ export async function excluirAula(aulaId: string, instrutorId: string) {
 // BUSCAR AULA POR ID
 export async function buscarAulaPorId(aulaId: string, instrutorId: string) {
   try {
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const res = await client.query(
+        `SELECT a.* , c.instrutor_id
+         FROM rarcursos.aulas a
+         JOIN rarcursos.cursos c ON c.id = a.curso_id
+         WHERE a.id = $1
+         LIMIT 1`,
+        [aulaId],
+      )
+      const aula = res.rows?.[0]
+      if (!aula) return { success: false, message: "Aula não encontrada", data: null }
+      if (aula.instrutor_id !== instrutorId)
+        return { success: false, message: "Sem permissão para acessar esta aula", data: null }
 
-    // Buscar a aula e verificar se pertence ao instrutor
-    const { data: aula, error } = await supabase
-      .from("aulas")
-      .select(`
-        *,
-        cursos!inner(instrutor_id)
-      `)
-      .eq("id", aulaId)
-      .single()
-
-    if (error || !aula) {
-      console.error("Erro ao buscar aula:", error)
-      return { success: false, message: "Aula não encontrada", data: null }
+      // Remover campo instrutor_id agregado
+      delete (aula as any).instrutor_id
+      return { success: true, data: aula }
+    } finally {
+      client.release()
     }
-
-    if (aula.cursos.instrutor_id !== instrutorId) {
-      return { success: false, message: "Sem permissão para acessar esta aula", data: null }
-    }
-
-    return { success: true, data: aula }
   } catch (error) {
-    console.error("Erro inesperado:", error)
+    console.error("Erro inesperado ao buscar aula (PG):", error)
     return { success: false, message: "Erro inesperado ao buscar aula", data: null }
   }
 }

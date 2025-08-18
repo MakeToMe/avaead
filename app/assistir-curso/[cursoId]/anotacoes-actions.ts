@@ -1,6 +1,6 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from 'pg'
 import { revalidatePath } from "next/cache"
 import { registrarAtividade } from "@/app/dashboard/actions"
 
@@ -32,6 +32,16 @@ export interface CriarAnotacaoData {
   privada?: boolean
 }
 
+// Pool Postgres
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false,
+})
+
 // Criar nova anotação
 export async function criarAnotacao(data: CriarAnotacaoData, userId: string) {
   try {
@@ -39,27 +49,30 @@ export async function criarAnotacao(data: CriarAnotacaoData, userId: string) {
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
-
-    const anotacaoData = {
-      usuario_uid: userId,
-      curso_id: data.curso_id,
-      aula_id: data.aula_id,
-      titulo: data.titulo || null,
-      conteudo: data.conteudo,
-      timestamp_video: data.timestamp_video || null,
-      tipo: data.tipo || "nota",
-      cor: data.cor || "azul",
-      privada: data.privada ?? true,
-      favorita: false,
-      ativo: true,
-    }
-
-    const { data: anotacao, error } = await supabase.from("anotacoes_usuario").insert(anotacaoData).select().single()
-
-    if (error) {
-      console.error("Erro ao criar anotação:", error)
-      return { success: false, error: "Erro ao criar anotação" }
+    const client = await pool.connect()
+    let anotacao: any
+    try {
+      const insertQuery = `
+        INSERT INTO rarcursos.anotacoes_usuario
+          (usuario_uid, curso_id, aula_id, titulo, conteudo, timestamp_video, tipo, cor, privada, favorita, ativo, criado_em, atualizado_em)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,true, NOW(), NOW())
+        RETURNING *
+      `
+      const params = [
+        userId,
+        data.curso_id,
+        data.aula_id,
+        data.titulo ?? null,
+        data.conteudo,
+        typeof data.timestamp_video === 'number' ? data.timestamp_video : null,
+        data.tipo || 'nota',
+        data.cor || 'azul',
+        data.privada ?? true,
+      ]
+      const res = await client.query(insertQuery, params)
+      anotacao = res.rows?.[0]
+    } finally {
+      client.release()
     }
 
     // Registrar atividade
@@ -96,23 +109,19 @@ export async function buscarAnotacoesAula(aulaId: string, userId: string) {
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
-
-    const { data: anotacoes, error } = await supabase
-      .from("anotacoes_usuario")
-      .select("*")
-      .eq("aula_id", aulaId)
-      .eq("usuario_uid", userId)
-      .eq("ativo", true)
-      .order("timestamp_video", { ascending: true, nullsFirst: false })
-      .order("criado_em", { ascending: false })
-
-    if (error) {
-      console.error("Erro ao buscar anotações:", error)
-      return { success: false, error: "Erro ao buscar anotações" }
+    const client = await pool.connect()
+    try {
+      const query = `
+        SELECT *
+        FROM rarcursos.anotacoes_usuario
+        WHERE aula_id = $1 AND usuario_uid = $2 AND ativo = true
+        ORDER BY timestamp_video NULLS LAST, criado_em DESC
+      `
+      const res = await client.query(query, [aulaId, userId])
+      return { success: true, data: res.rows as AnotacaoUsuario[] }
+    } finally {
+      client.release()
     }
-
-    return { success: true, data: anotacoes as AnotacaoUsuario[] }
   } catch (error) {
     console.error("Erro ao buscar anotações:", error)
     return { success: false, error: "Erro interno do servidor" }
@@ -134,42 +143,40 @@ export async function buscarAnotacoesCurso(
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const params: any[] = [cursoId, userId]
+      const whereClauses = [
+        `au.curso_id = $1`,
+        `au.usuario_uid = $2`,
+        `au.ativo = true`,
+      ]
 
-    let query = supabase
-      .from("anotacoes_usuario")
-      .select(`
-        *,
-        aulas:aula_id (
-          titulo,
-          ordem
-        )
-      `)
-      .eq("curso_id", cursoId)
-      .eq("usuario_uid", userId)
-      .eq("ativo", true)
+      if (filtros?.tipo && filtros.tipo !== 'todos') {
+        params.push(filtros.tipo)
+        whereClauses.push(`au.tipo = $${params.length}`)
+      }
+      if (filtros?.favoritas) {
+        whereClauses.push(`au.favorita = true`)
+      }
+      if (filtros?.busca) {
+        params.push(`%${filtros.busca}%`)
+        params.push(`%${filtros.busca}%`)
+        whereClauses.push(`(au.titulo ILIKE $${params.length-1} OR au.conteudo ILIKE $${params.length})`)
+      }
 
-    // Aplicar filtros
-    if (filtros?.tipo && filtros.tipo !== "todos") {
-      query = query.eq("tipo", filtros.tipo)
+      const sql = `
+        SELECT au.*, a.titulo AS aula_titulo, a.ordem AS aula_ordem
+        FROM rarcursos.anotacoes_usuario au
+        LEFT JOIN rarcursos.aulas a ON a.id = au.aula_id
+        WHERE ${whereClauses.join(' AND ')}
+        ORDER BY au.criado_em DESC
+      `
+      const res = await client.query(sql, params)
+      return { success: true, data: res.rows }
+    } finally {
+      client.release()
     }
-
-    if (filtros?.favoritas) {
-      query = query.eq("favorita", true)
-    }
-
-    if (filtros?.busca) {
-      query = query.or(`titulo.ilike.%${filtros.busca}%,conteudo.ilike.%${filtros.busca}%`)
-    }
-
-    const { data: anotacoes, error } = await query.order("criado_em", { ascending: false })
-
-    if (error) {
-      console.error("Erro ao buscar anotações do curso:", error)
-      return { success: false, error: "Erro ao buscar anotações" }
-    }
-
-    return { success: true, data: anotacoes }
   } catch (error) {
     console.error("Erro ao buscar anotações do curso:", error)
     return { success: false, error: "Erro interno do servidor" }
@@ -183,22 +190,33 @@ export async function atualizarAnotacao(id: string, data: Partial<CriarAnotacaoD
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    let anotacao: any
+    try {
+      const fields: string[] = []
+      const params: any[] = []
+      let idx = 1
+      if (data.titulo !== undefined) { fields.push(`titulo = $${idx++}`); params.push(data.titulo) }
+      if (data.conteudo !== undefined) { fields.push(`conteudo = $${idx++}`); params.push(data.conteudo) }
+      if (data.timestamp_video !== undefined) { fields.push(`timestamp_video = $${idx++}`); params.push(data.timestamp_video) }
+      if (data.tipo !== undefined) { fields.push(`tipo = $${idx++}`); params.push(data.tipo) }
+      if (data.cor !== undefined) { fields.push(`cor = $${idx++}`); params.push(data.cor) }
+      if (data.privada !== undefined) { fields.push(`privada = $${idx++}`); params.push(data.privada) }
+      fields.push(`atualizado_em = NOW()`)
+      params.push(id)
+      params.push(userId)
 
-    const { data: anotacao, error } = await supabase
-      .from("anotacoes_usuario")
-      .update({
-        ...data,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao atualizar anotação:", error)
-      return { success: false, error: "Erro ao atualizar anotação" }
+      const sql = `
+        UPDATE rarcursos.anotacoes_usuario
+        SET ${fields.join(', ')}
+        WHERE id = $${idx++} AND usuario_uid = $${idx}
+        RETURNING *
+      `
+      const res = await client.query(sql, params)
+      anotacao = res.rows?.[0]
+      if (!anotacao) return { success: false, error: "Anotação não encontrada" }
+    } finally {
+      client.release()
     }
 
     // Registrar atividade
@@ -233,39 +251,28 @@ export async function alternarFavorito(id: string, userId: string) {
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const curRes = await client.query(
+        `SELECT favorita, curso_id FROM rarcursos.anotacoes_usuario WHERE id = $1 AND usuario_uid = $2 LIMIT 1`,
+        [id, userId]
+      )
+      const atual = curRes.rows?.[0]
+      if (!atual) return { success: false, error: "Anotação não encontrada" }
 
-    // Buscar estado atual
-    const { data: anotacaoAtual, error: errorBusca } = await supabase
-      .from("anotacoes_usuario")
-      .select("favorita, curso_id")
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-      .single()
-
-    if (errorBusca) {
-      return { success: false, error: "Anotação não encontrada" }
+      const updRes = await client.query(
+        `UPDATE rarcursos.anotacoes_usuario
+           SET favorita = $1, atualizado_em = NOW()
+         WHERE id = $2 AND usuario_uid = $3
+         RETURNING *`,
+        [!atual.favorita, id, userId]
+      )
+      const anotacao = updRes.rows?.[0]
+      revalidatePath(`/assistir-curso/${atual.curso_id}`)
+      return { success: true, data: anotacao }
+    } finally {
+      client.release()
     }
-
-    // Alternar favorito
-    const { data: anotacao, error } = await supabase
-      .from("anotacoes_usuario")
-      .update({
-        favorita: !anotacaoAtual.favorita,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Erro ao alternar favorito:", error)
-      return { success: false, error: "Erro ao atualizar anotação" }
-    }
-
-    revalidatePath(`/assistir-curso/${anotacaoAtual.curso_id}`)
-    return { success: true, data: anotacao }
   } catch (error) {
     console.error("Erro ao alternar favorito:", error)
     return { success: false, error: "Erro interno do servidor" }
@@ -279,62 +286,43 @@ export async function excluirAnotacao(id: string, userId: string) {
       return { success: false, error: "Usuário não autenticado" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      const atualRes = await client.query(
+        `SELECT curso_id, titulo, tipo FROM rarcursos.anotacoes_usuario WHERE id = $1 AND usuario_uid = $2 LIMIT 1`,
+        [id, userId]
+      )
+      const atual = atualRes.rows?.[0]
+      if (!atual) return { success: false, error: "Anotação não encontrada" }
 
-    // Buscar curso_id antes de excluir
-    const { data: anotacaoAtual, error: errorBusca } = await supabase
-      .from("anotacoes_usuario")
-      .select("curso_id")
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-      .single()
+      await client.query(
+        `UPDATE rarcursos.anotacoes_usuario
+           SET ativo = false, atualizado_em = NOW()
+         WHERE id = $1 AND usuario_uid = $2`,
+        [id, userId]
+      )
 
-    if (errorBusca) {
-      return { success: false, error: "Anotação não encontrada" }
+      await registrarAtividade(
+        userId,
+        "anotacao_excluida",
+        "Anotação excluída",
+        `Excluiu uma anotação ${atual?.titulo ? `"${atual.titulo}"` : ""}`,
+        "Trash2",
+        "text-red-400",
+        "anotacao",
+        id,
+        `/assistir-curso/${atual.curso_id}`,
+        {
+          tipo: atual?.tipo,
+          titulo: atual?.titulo,
+        },
+      )
+
+      revalidatePath(`/assistir-curso/${atual.curso_id}`)
+      return { success: true }
+    } finally {
+      client.release()
     }
-
-    // Buscar dados da anotação antes de excluir para o registro de atividade
-    const { data: anotacaoParaAtividade } = await supabase
-      .from("anotacoes_usuario")
-      .select("titulo, tipo")
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-      .single()
-
-    // Soft delete
-    const { error } = await supabase
-      .from("anotacoes_usuario")
-      .update({
-        ativo: false,
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .eq("usuario_uid", userId)
-
-    if (error) {
-      console.error("Erro ao excluir anotação:", error)
-      return { success: false, error: "Erro ao excluir anotação" }
-    }
-
-    // Registrar atividade
-    await registrarAtividade(
-      userId,
-      "anotacao_excluida",
-      "Anotação excluída",
-      `Excluiu uma anotação ${anotacaoParaAtividade?.titulo ? `"${anotacaoParaAtividade.titulo}"` : ""}`,
-      "Trash2",
-      "text-red-400",
-      "anotacao",
-      id,
-      `/assistir-curso/${anotacaoAtual.curso_id}`,
-      {
-        tipo: anotacaoParaAtividade?.tipo,
-        titulo: anotacaoParaAtividade?.titulo,
-      },
-    )
-
-    revalidatePath(`/assistir-curso/${anotacaoAtual.curso_id}`)
-    return { success: true }
   } catch (error) {
     console.error("Erro ao excluir anotação:", error)
     return { success: false, error: "Erro interno do servidor" }

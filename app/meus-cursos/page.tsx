@@ -82,7 +82,7 @@ export default function MeusCursosPage() {
         setTotalCursos(result.totalCursos)
         setCursosCarregados(true)
       } else {
-        console.error("❌ Erro ao buscar cursos:", result.error)
+        console.error("❌ Erro ao buscar cursos:", result.message)
       }
     } catch (error) {
       console.error("❌ Erro ao carregar cursos:", error)

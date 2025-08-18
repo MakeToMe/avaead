@@ -34,12 +34,14 @@ import {
   uploadPdfMinio,
 } from "../actions"
 import type { AulaData, ModuloData } from "../actions"
-import { getCurrentClientUser } from "@/lib/auth-client"
+import { getCurrentClientUser, getCurrentClientUserAsync } from "@/lib/auth-client"
 import { useToast } from "@/hooks/use-toast"
 import { formatarTamanhoArquivo } from "@/lib/utils-arquivo"
 import { useRouter } from "next/navigation"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { useUpload } from "@/hooks/use-upload"
+import { UploadProgressInline, UploadSuccessCard } from "@/components/upload-progress"
 
 interface Curso {
   id: string
@@ -97,13 +99,16 @@ const commonEmojis = [
 
 export default function AdicionarAulaPage() {
   const [loading, setLoading] = useState(false)
-  const [uploadingFile, setUploadingFile] = useState(false)
   const [cursos, setCursos] = useState<Curso[]>([])
   const [modulos, setModulos] = useState<Modulo[]>([])
   const [loadingCursos, setLoadingCursos] = useState(false)
   const [loadingModulos, setLoadingModulos] = useState(false)
   const [filePreview, setFilePreview] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+
+  // Estados para upload com progresso
+  const [showSuccessCard, setShowSuccessCard] = useState(false)
+  const [aulaCreated, setAulaCreated] = useState<string>("")
 
   // Navegação
   const router = useRouter()
@@ -134,6 +139,26 @@ export default function AdicionarAulaPage() {
 
   const { toast } = useToast()
 
+  // Hook de upload com progresso
+  const upload = useUpload({
+    onSuccess: (url) => {
+      console.log("✅ Upload concluído:", url)
+      toast({
+        variant: "success",
+        title: "✅ Upload concluído!",
+        description: "Arquivo enviado com sucesso",
+      })
+    },
+    onError: (error) => {
+      console.error("❌ Erro no upload:", error)
+      toast({
+        variant: "destructive",
+        title: "Erro no upload",
+        description: error,
+      })
+    }
+  })
+
   const [formData, setFormData] = useState({
     curso_id: "",
     modulo_id: "",
@@ -144,6 +169,8 @@ export default function AdicionarAulaPage() {
     duracao_horas: "",
     duracao_minutos: "",
     ativo: true,
+    privada: false,
+    ao_vivo: false,
   })
 
   // Carregar cursos quando a página carregar
@@ -195,11 +222,14 @@ export default function AdicionarAulaPage() {
   }
 
   const carregarCursos = async () => {
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
-
     setLoadingCursos(true)
     try {
+      const currentUser = await getCurrentClientUserAsync()
+      if (!currentUser?.uid) {
+        console.log("Usuário não autenticado, não é possível carregar cursos")
+        return
+      }
+
       const result = await buscarCursosDoInstrutor(currentUser.uid)
       if (result.success) {
         setCursos(result.data)
@@ -212,11 +242,14 @@ export default function AdicionarAulaPage() {
   }
 
   const carregarModulos = async (cursoId: string) => {
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
-
     setLoadingModulos(true)
     try {
+      const currentUser = await getCurrentClientUserAsync()
+      if (!currentUser?.uid) {
+        console.log("Usuário não autenticado, não é possível carregar módulos")
+        return
+      }
+
       const result = await buscarModulosDoCurso(cursoId, currentUser.uid)
       if (result.success) {
         setModulos(result.data)
@@ -231,11 +264,14 @@ export default function AdicionarAulaPage() {
   const handleCriarNovoModulo = async () => {
     if (!novoModulo.trim() || !formData.curso_id) return
 
-    const currentUser = getCurrentClientUser()
-    if (!currentUser?.uid) return
-
     setCriandoModulo(true)
     try {
+      const currentUser = await getCurrentClientUserAsync()
+      if (!currentUser?.uid) {
+        console.log("Usuário não autenticado, não é possível criar módulo")
+        return
+      }
+
       // Calcular próxima ordem
       const proximaOrdem = modulos.length + 1
 
@@ -438,7 +474,7 @@ export default function AdicionarAulaPage() {
     setLoading(true)
 
     try {
-      const currentUser = getCurrentClientUser()
+      const currentUser = await getCurrentClientUserAsync()
       if (!currentUser?.uid) {
         toast({
           variant: "destructive",
@@ -489,42 +525,16 @@ export default function AdicionarAulaPage() {
 
       // Upload do arquivo se houver
       if (selectedFile) {
-        setUploadingFile(true)
-
         const fileSize = (selectedFile.size / 1024 / 1024).toFixed(2)
 
-
-
         toast({
-          title: "📤 Enviando arquivo...",
-          description: `Enviando arquivo de ${fileSize}MB`,
+          title: "📤 Iniciando upload...",
+          description: `Preparando arquivo de ${fileSize}MB`,
         })
 
-        // Upload direto para MinIO
-        const uploadResult =
-          formData.tipo === "video"
-            ? await uploadVideoMinio(selectedFile, currentUser.uid)
-            : await uploadPdfMinio(selectedFile, currentUser.uid)
-
-        setUploadingFile(false)
-
-        if (!uploadResult.success) {
-          toast({
-            variant: "destructive",
-            title: "Erro no upload",
-            description: uploadResult.message || "Erro ao fazer upload do arquivo",
-          })
-          return
-        }
-
-        mediaUrl = uploadResult.url
-
-
-        toast({
-          variant: "success",
-          title: "✅ Upload concluído!",
-          description: "Arquivo enviado com sucesso",
-        })
+        // Upload com progresso usando o hook
+        const uploadType = formData.tipo === "video" ? "video" : "file"
+        mediaUrl = await upload.upload(selectedFile, currentUser.uid, uploadType)
       }
 
       // Calcular duração total em minutos
@@ -545,20 +555,17 @@ export default function AdicionarAulaPage() {
         media_url: mediaUrl,
         duracao: duracaoTotal,
         ativo: formData.ativo,
+        privada: formData.privada,
+        ao_vivo: formData.ao_vivo,
       }
 
 
       const result = await criarAula(aulaData, currentUser.uid)
 
       if (result.success) {
-        toast({
-          variant: "success",
-          title: "✅ Sucesso!",
-          description: "Aula criada com sucesso!",
-        })
-
-        // Redirecionar de volta para a lista de aulas
-        router.push("/minhas-aulas")
+        // Mostrar card de sucesso
+        setAulaCreated(formData.titulo.trim())
+        setShowSuccessCard(true)
       } else {
         toast({
           variant: "destructive",
@@ -575,12 +582,11 @@ export default function AdicionarAulaPage() {
       })
     } finally {
       setLoading(false)
-      setUploadingFile(false)
     }
   }
 
   // Verificar se os campos devem estar habilitados
-  const camposHabilitados = moduloSelecionado
+  const camposHabilitados = moduloSelecionado && !upload.isUploading && !loading
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800">
@@ -998,7 +1004,7 @@ export default function AdicionarAulaPage() {
                           <Button
                             type="button"
                             onClick={removeFile}
-                            disabled={uploadingFile}
+                            disabled={upload.isUploading}
                             className="w-8 h-8 p-0 bg-red-600 hover:bg-red-700"
                           >
                             <X className="w-4 h-4" />
@@ -1023,7 +1029,7 @@ export default function AdicionarAulaPage() {
                       type="file"
                       accept={formData.tipo === "video" ? "video/*" : "application/pdf"}
                       onChange={handleFileChange}
-                      disabled={uploadingFile}
+                      disabled={upload.isUploading}
                       className="bg-slate-800/50 border-slate-700 focus:border-indigo-500/50 text-white file:bg-slate-700 file:text-white file:border-0"
                     />
                   </div>
@@ -1086,28 +1092,77 @@ export default function AdicionarAulaPage() {
                 />
               </div>
 
+              {/* Aula Privada */}
+              <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                <div>
+                  <Label className="text-slate-300 font-medium">Aula Privada</Label>
+                  <p className="text-slate-400 text-sm">Visível apenas para quem tiver permissão</p>
+                </div>
+                <Switch
+                  checked={formData.privada}
+                  onCheckedChange={(checked) => setFormData({ ...formData, privada: checked })}
+                  disabled={!camposHabilitados}
+                  className="data-[state=checked]:bg-indigo-600 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Aula Ao Vivo */}
+              <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                <div>
+                  <Label className="text-slate-300 font-medium">Aula Ao Vivo</Label>
+                  <p className="text-slate-400 text-sm">Marque se esta aula será transmitida ao vivo</p>
+                </div>
+                <Switch
+                  checked={formData.ao_vivo}
+                  onCheckedChange={(checked) => setFormData({ ...formData, ao_vivo: checked })}
+                  disabled={!camposHabilitados}
+                  className="data-[state=checked]:bg-indigo-600 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Componente de progresso de upload */}
+              {selectedFile && (upload.isUploading || upload.progress || upload.error) && (
+                <UploadProgressInline
+                  isUploading={upload.isUploading}
+                  progress={upload.progress}
+                  fileName={selectedFile.name}
+                  error={upload.error}
+                />
+              )}
+
               {/* Botões */}
               <div className="flex gap-4 pt-6">
                 <Button
                   type="button"
                   onClick={() => router.push("/minhas-aulas")}
-                  disabled={uploadingFile}
+                  disabled={upload.isUploading || loading}
                   className="flex-1 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white border-0"
                 >
                   Cancelar
                 </Button>
                 <Button
                   type="submit"
-                  disabled={loading || uploadingFile || !camposHabilitados}
+                  disabled={loading || upload.isUploading || !camposHabilitados}
                   className="flex-1 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 disabled:opacity-50"
                 >
-                  {loading ? "Criando..." : uploadingFile ? "Enviando..." : "Criar Aula"}
+                  {loading ? "Criando aula..." : upload.isUploading ? "Enviando..." : "Criar Aula"}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
       </div>
+
+      {/* Card de sucesso */}
+      {showSuccessCard && (
+        <UploadSuccessCard
+          aulaTitle={aulaCreated}
+          onVoltar={() => {
+            setShowSuccessCard(false)
+            router.push("/minhas-aulas")
+          }}
+        />
+      )}
     </div>
   )
 }

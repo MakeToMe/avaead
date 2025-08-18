@@ -1,6 +1,6 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from "pg"
 
 export interface CursoDisponivel {
   id: string
@@ -40,8 +40,6 @@ async function registrarAtividade(
   url: string,
   metadados: any = {},
 ) {
-  const supabase = createServerSupabaseClient()
-
   try {
     console.log("=== REGISTRANDO ATIVIDADE ===")
     console.log("userId:", userId)
@@ -49,30 +47,32 @@ async function registrarAtividade(
     console.log("titulo:", titulo)
     console.log("descricao:", descricao)
 
-    const atividadeData = {
-      usuario_uid: userId,
-      tipo_atividade: tipo,
-      titulo,
-      descricao,
-      icone,
-      cor_icone: corIcone,
-      entidade_tipo: entidadeTipo,
-      entidade_id: entidadeId,
-      url,
-      metadados,
+    const client = await pool.connect()
+    try {
+      const insertQuery = `
+        INSERT INTO rarcursos.atividades_recentes 
+          (usuario_uid, tipo_atividade, titulo, descricao, icone, cor_icone, entidade_tipo, entidade_id, url, metadados)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id
+      `
+      const params = [
+        userId,
+        tipo,
+        titulo,
+        descricao,
+        icone,
+        corIcone,
+        entidadeTipo,
+        entidadeId,
+        url,
+        metadados ?? {},
+      ]
+      const res = await client.query(insertQuery, params)
+      console.log("Atividade registrada com sucesso:", res.rows?.[0])
+      return { success: true, data: res.rows?.[0] }
+    } finally {
+      client.release()
     }
-
-    console.log("Dados da atividade:", atividadeData)
-
-    const { data, error } = await supabase.from("atividades_recentes").insert(atividadeData).select()
-
-    if (error) {
-      console.error("Erro ao registrar atividade:", error)
-      return { success: false, error }
-    }
-
-    console.log("Atividade registrada com sucesso:", data)
-    return { success: true, data }
   } catch (error) {
     console.error("Erro ao registrar atividade:", error)
     return { success: false, error }
@@ -86,77 +86,66 @@ export async function buscarCursosDisponiveis(userId: string) {
       return { success: false, error: "ID do usuário é obrigatório" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Buscar cursos ativos com contagem de aulas
+      const cursosQuery = `
+        SELECT 
+          c.id,
+          c.titulo,
+          c.descricao,
+          c.imagem_url,
+          COALESCE(c.duracao_total, 0) AS duracao_total,
+          c.criado_em,
+          c.instrutor_id,
+          COUNT(a.id)::int AS total_aulas
+        FROM rarcursos.cursos c
+        LEFT JOIN rarcursos.aulas a ON a.curso_id = c.id
+        WHERE c.ativo = TRUE
+        GROUP BY c.id
+        ORDER BY c.criado_em DESC
+      `
+      const cursosRes = await client.query(cursosQuery)
+      const cursos = (cursosRes.rows || []).filter((c: any) => c.total_aulas > 0)
 
-    // Buscar todos os cursos ativos
-    const { data: cursos, error: cursosError } = await supabase
-      .from("cursos")
-      .select(`
-        id,
-        titulo,
-        descricao,
-        imagem_url,
-        duracao_total,
-        criado_em,
-        instrutor_id
-      `)
-      .eq("ativo", true)
-      .order("criado_em", { ascending: false })
-
-    if (cursosError) {
-      console.error("Erro ao buscar cursos:", cursosError)
-      return { success: false, error: "Erro ao buscar cursos" }
-    }
-
-    if (!cursos || cursos.length === 0) {
-      return { success: true, data: [] }
-    }
-
-    // Buscar nomes dos instrutores
-    const instrutorIds = [...new Set(cursos.map((c) => c.instrutor_id))]
-    const { data: instrutores } = await supabase.from("users").select("uid, nome").in("uid", instrutorIds)
-
-    const instrutoresMap = new Map(instrutores?.map((i) => [i.uid, i.nome]) || [])
-
-    // Buscar matrículas do usuário
-    const { data: matriculas, error: matriculasError } = await supabase
-      .from("matriculas")
-      .select("curso_id")
-      .eq("aluno_id", userId)
-
-    if (matriculasError) {
-      console.error("Erro ao buscar matrículas:", matriculasError)
-      return { success: false, error: "Erro ao buscar matrículas" }
-    }
-
-    const cursosMatriculados = new Set(matriculas?.map((m) => m.curso_id) || [])
-
-    // Buscar contagem de aulas por curso e filtrar apenas cursos com aulas
-    const cursosComAulas = []
-
-    for (const curso of cursos) {
-      const { count } = await supabase
-        .from("aulas")
-        .select("*", { count: "exact", head: true })
-        .eq("curso_id", curso.id)
-
-      // Só adiciona se o curso tem aulas
-      if (count && count > 0) {
-        cursosComAulas.push({
-          id: curso.id,
-          titulo: curso.titulo,
-          descricao: curso.descricao || "",
-          imagem_url: curso.imagem_url,
-          instrutor_nome: instrutoresMap.get(curso.instrutor_id) || "Instrutor",
-          duracao_total: curso.duracao_total || 0,
-          total_aulas: count,
-          criado_em: curso.criado_em,
-          matriculado: cursosMatriculados.has(curso.id),
-        })
+      if (cursos.length === 0) {
+        return { success: true, data: [] }
       }
-    }
 
-    return { success: true, data: cursosComAulas }
+      // Buscar matrículas do usuário
+      const matQuery = `
+        SELECT curso_id FROM rarcursos.matriculas WHERE aluno_id = $1
+      `
+      const matRes = await client.query(matQuery, [userId])
+      const cursosMatriculados = new Set((matRes.rows || []).map((m: any) => m.curso_id))
+
+      // Buscar nomes dos instrutores
+      const instrutorIds = [...new Set(cursos.map((c: any) => c.instrutor_id))]
+      let instrutoresMap = new Map<string, string>()
+      if (instrutorIds.length > 0) {
+        const instrutoresRes = await client.query(
+          `SELECT uid, nome FROM rarcursos.users WHERE uid = ANY($1::uuid[])`,
+          [instrutorIds],
+        )
+        instrutoresMap = new Map((instrutoresRes.rows || []).map((i: any) => [i.uid, i.nome]))
+      }
+
+      const data: CursoDisponivel[] = cursos.map((curso: any) => ({
+        id: curso.id,
+        titulo: curso.titulo,
+        descricao: curso.descricao || "",
+        imagem_url: curso.imagem_url,
+        instrutor_nome: instrutoresMap.get(curso.instrutor_id) || "Instrutor",
+        duracao_total: Number(curso.duracao_total) || 0,
+        total_aulas: Number(curso.total_aulas) || 0,
+        criado_em: curso.criado_em,
+        matriculado: cursosMatriculados.has(curso.id),
+      }))
+
+      return { success: true, data }
+    } finally {
+      client.release()
+    }
   } catch (error) {
     console.error("Erro ao buscar cursos disponíveis:", error)
     return { success: false, error: "Erro interno do servidor" }
@@ -172,110 +161,79 @@ export async function buscarCursosMatriculados(userId: string) {
       return { success: false, error: "ID do usuário é obrigatório" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Buscar matrículas do usuário
+      const matQuery = `
+        SELECT id, progresso_percentual, status, data_matricula, curso_id
+        FROM rarcursos.matriculas
+        WHERE aluno_id = $1
+        ORDER BY data_matricula DESC
+      `
+      const matRes = await client.query(matQuery, [userId])
+      const matriculas = matRes.rows || []
+      if (matriculas.length === 0) {
+        return { success: true, data: [] }
+      }
 
-    // Buscar matrículas do usuário
-    const { data: matriculas, error: matriculasError } = await supabase
-      .from("matriculas")
-      .select(`
-        id,
-        progresso_percentual,
-        status,
-        data_matricula,
-        curso_id
-      `)
-      .eq("aluno_id", userId)
-      .order("data_matricula", { ascending: false })
+      // Buscar cursos
+      const cursoIds = matriculas.map((m: any) => m.curso_id)
+      const cursosRes = await client.query(
+        `SELECT id, titulo, descricao, imagem_url, COALESCE(duracao_total, 0) AS duracao_total, instrutor_id 
+         FROM rarcursos.cursos WHERE id = ANY($1::uuid[])`,
+        [cursoIds],
+      )
+      const cursos = cursosRes.rows || []
+      if (cursos.length === 0) {
+        return { success: true, data: [] }
+      }
 
-    if (matriculasError) {
-      console.error("Erro ao buscar matrículas:", matriculasError)
-      return { success: false, error: "Erro ao buscar matrículas" }
+      // Contagem de aulas por curso
+      const aulasCountRes = await client.query(
+        `SELECT curso_id, COUNT(*)::int AS total_aulas 
+         FROM rarcursos.aulas 
+         WHERE curso_id = ANY($1::uuid[]) 
+         GROUP BY curso_id`,
+        [cursoIds],
+      )
+      const aulasCountMap = new Map<string, number>(
+        (aulasCountRes.rows || []).map((r: any) => [r.curso_id, Number(r.total_aulas)]),
+      )
+
+      // Nomes dos instrutores
+      const instrutorIds = [...new Set(cursos.map((c: any) => c.instrutor_id))]
+      let instrutoresMap = new Map<string, string>()
+      if (instrutorIds.length > 0) {
+        const instrutoresRes = await client.query(
+          `SELECT uid, nome FROM rarcursos.users WHERE uid = ANY($1::uuid[])`,
+          [instrutorIds],
+        )
+        instrutoresMap = new Map((instrutoresRes.rows || []).map((i: any) => [i.uid, i.nome]))
+      }
+
+      const cursosMap = new Map<string, any>(cursos.map((c: any) => [c.id, c]))
+
+      const data: CursoMatriculado[] = matriculas.map((m: any) => {
+        const curso = cursosMap.get(m.curso_id)
+        if (!curso) return null
+        return {
+          id: curso.id,
+          titulo: curso.titulo,
+          descricao: curso.descricao || "",
+          imagem_url: curso.imagem_url,
+          instrutor_nome: instrutoresMap.get(curso.instrutor_id) || "Instrutor",
+          duracao_total: Number(curso.duracao_total) || 0,
+          total_aulas: aulasCountMap.get(curso.id) || 0,
+          progresso_percentual: Number(m.progresso_percentual) || 0,
+          status: m.status,
+          data_matricula: m.data_matricula,
+        }
+      }).filter(Boolean) as CursoMatriculado[]
+
+      return { success: true, data }
+    } finally {
+      client.release()
     }
-
-    if (!matriculas || matriculas.length === 0) {
-      return { success: true, data: [] }
-    }
-
-    console.log("Matrículas encontradas:", matriculas?.length)
-    console.log("Matrículas:", matriculas)
-
-    // Buscar dados dos cursos matriculados
-    const cursoIds = matriculas.map((m) => m.curso_id)
-    const { data: cursos, error: cursosError } = await supabase
-      .from("cursos")
-      .select(`
-        id,
-        titulo,
-        descricao,
-        imagem_url,
-        duracao_total,
-        instrutor_id
-      `)
-      .in("id", cursoIds)
-
-    if (cursosError) {
-      console.error("Erro ao buscar cursos:", cursosError)
-      return { success: false, error: "Erro ao buscar cursos" }
-    }
-
-    if (!cursos || cursos.length === 0) {
-      return { success: true, data: [] }
-    }
-
-    console.log("Cursos encontrados:", cursos?.length)
-    console.log("Cursos:", cursos)
-
-    // Buscar nomes dos instrutores
-    const instrutorIds = [...new Set(cursos.map((c) => c.instrutor_id))]
-    const { data: instrutores } = await supabase.from("users").select("uid, nome").in("uid", instrutorIds)
-
-    const instrutoresMap = new Map(instrutores?.map((i) => [i.uid, i.nome]) || [])
-    const cursosMap = new Map(cursos.map((c) => [c.id, c]) || [])
-
-    // Processar cada matrícula e verificar se o curso tem aulas
-    const cursosMatriculadosComAulas = []
-
-    for (const matricula of matriculas) {
-      const curso = cursosMap.get(matricula.curso_id)
-      if (!curso) continue
-
-      // Verificar se o curso tem aulas
-      const { count } = await supabase
-        .from("aulas")
-        .select("*", { count: "exact", head: true })
-        .eq("curso_id", curso.id)
-
-      // Só adiciona se o curso tem aulas
-      // if (count && count > 0) {
-      //   cursosMatriculadosComAulas.push({
-      //     id: curso.id,
-      //     titulo: curso.titulo,
-      //     descricao: curso.descricao || "",
-      //     imagem_url: curso.imagem_url,
-      //     instrutor_nome: instrutoresMap.get(curso.instrutor_id) || "Instrutor",
-      //     duracao_total: curso.duracao_total || 0,
-      //     total_aulas: count,
-      //     progresso_percentual: matricula.progresso_percentual,
-      //     status: matricula.status,
-      //     data_matricula: matricula.data_matricula,
-      //   })
-      // }
-
-      cursosMatriculadosComAulas.push({
-        id: curso.id,
-        titulo: curso.titulo,
-        descricao: curso.descricao || "",
-        imagem_url: curso.imagem_url,
-        instrutor_nome: instrutoresMap.get(curso.instrutor_id) || "Instrutor",
-        duracao_total: curso.duracao_total || 0,
-        total_aulas: count || 0,
-        progresso_percentual: matricula.progresso_percentual,
-        status: matricula.status,
-        data_matricula: matricula.data_matricula,
-      })
-    }
-
-    return { success: true, data: cursosMatriculadosComAulas }
   } catch (error) {
     console.error("Erro ao buscar cursos matriculados:", error)
     return { success: false, error: "Erro interno do servidor" }
@@ -293,84 +251,85 @@ export async function matricularEmCurso(cursoId: string, userId: string) {
       return { success: false, error: "Dados obrigatórios não fornecidos" }
     }
 
-    const supabase = createServerSupabaseClient()
+    const client = await pool.connect()
+    try {
+      // Verificar curso
+      const cursoRes = await client.query(
+        `SELECT id, titulo, ativo FROM rarcursos.cursos WHERE id = $1 LIMIT 1`,
+        [cursoId],
+      )
+      const curso = cursoRes.rows?.[0]
+      if (!curso) {
+        return { success: false, error: "Curso não encontrado" }
+      }
+      if (!curso.ativo) {
+        return { success: false, error: "Este curso não está mais disponível" }
+      }
 
-    // Verificar se o curso existe, está ativo e tem aulas
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("id, titulo, ativo")
-      .eq("id", cursoId)
-      .single()
+      // Verificar aulas
+      const aulasRes = await client.query(
+        `SELECT COUNT(*)::int AS total FROM rarcursos.aulas WHERE curso_id = $1`,
+        [cursoId],
+      )
+      const totalAulas = Number(aulasRes.rows?.[0]?.total || 0)
+      if (totalAulas === 0) {
+        return { success: false, error: "Este curso ainda não possui aulas disponíveis" }
+      }
 
-    if (cursoError || !curso) {
-      return { success: false, error: "Curso não encontrado" }
+      // Verificar matrícula existente
+      const matExistsRes = await client.query(
+        `SELECT id FROM rarcursos.matriculas WHERE aluno_id = $1 AND curso_id = $2 LIMIT 1`,
+        [userId, cursoId],
+      )
+      if (matExistsRes.rows?.[0]) {
+        return { success: false, error: "Você já está matriculado neste curso" }
+      }
+
+      // Criar matrícula
+      await client.query(
+        `INSERT INTO rarcursos.matriculas (aluno_id, curso_id, status, progresso_percentual, data_matricula)
+         VALUES ($1, $2, 'ativa', 0, NOW())`,
+        [userId, cursoId],
+      )
+
+      console.log("Matrícula criada com sucesso!")
+
+      // Registrar atividade
+      const resultadoAtividade = await registrarAtividade(
+        userId,
+        "matricula_curso",
+        "Nova matrícula realizada",
+        `Você se matriculou no curso "${curso.titulo}"`,
+        "book-open",
+        "indigo",
+        "curso",
+        cursoId,
+        `/assistir-curso/${cursoId}`,
+        {
+          curso_titulo: curso.titulo,
+          total_aulas: totalAulas,
+        },
+      )
+      if (!resultadoAtividade.success) {
+        console.error("Erro ao registrar atividade:", resultadoAtividade.error)
+      }
+
+      return { success: true, message: `Matrícula realizada com sucesso no curso "${curso.titulo}"!` }
+    } finally {
+      client.release()
     }
-
-    if (!curso.ativo) {
-      return { success: false, error: "Este curso não está mais disponível" }
-    }
-
-    // Verificar se o curso tem aulas
-    const { count: totalAulas } = await supabase
-      .from("aulas")
-      .select("*", { count: "exact", head: true })
-      .eq("curso_id", cursoId)
-
-    if (!totalAulas || totalAulas === 0) {
-      return { success: false, error: "Este curso ainda não possui aulas disponíveis" }
-    }
-
-    // Verificar se já está matriculado
-    const { data: matriculaExistente } = await supabase
-      .from("matriculas")
-      .select("id")
-      .eq("aluno_id", userId)
-      .eq("curso_id", cursoId)
-      .single()
-
-    if (matriculaExistente) {
-      return { success: false, error: "Você já está matriculado neste curso" }
-    }
-
-    // Criar matrícula
-    const { error: matriculaError } = await supabase.from("matriculas").insert({
-      aluno_id: userId,
-      curso_id: cursoId,
-      status: "ativa",
-      progresso_percentual: 0,
-    })
-
-    if (matriculaError) {
-      console.error("Erro ao criar matrícula:", matriculaError)
-      return { success: false, error: "Erro ao fazer matrícula" }
-    }
-
-    console.log("Matrícula criada com sucesso!")
-
-    // Registrar atividade de matrícula
-    const resultadoAtividade = await registrarAtividade(
-      userId,
-      "matricula_curso",
-      "Nova matrícula realizada",
-      `Você se matriculou no curso "${curso.titulo}"`,
-      "book-open",
-      "indigo",
-      "curso",
-      cursoId,
-      `/assistir-curso/${cursoId}`,
-      {
-        curso_titulo: curso.titulo,
-        total_aulas: totalAulas,
-      },
-    )
-
-    if (!resultadoAtividade.success) {
-      console.error("Erro ao registrar atividade:", resultadoAtividade.error)
-    }
-
-    return { success: true, message: `Matrícula realizada com sucesso no curso "${curso.titulo}"!` }
   } catch (error) {
     console.error("Erro ao matricular em curso:", error)
     return { success: false, error: "Erro interno do servidor" }
   }
 }
+
+// Pool Postgres (config centralizada)
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false,
+})

@@ -1,10 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { verifyJwt } from "@/lib/auth-jwt"
 import { cookies } from "next/headers"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { Pool } from 'pg'
+
+// Configuração do banco PostgreSQL
+const pool = new Pool({
+  host: "studio.rardevops.com",
+  port: 4202,
+  database: "postgres",
+  user: "supabase_admin",
+  password: "Aha517_Rar-PGRS_U2a59w",
+  ssl: false
+});
 
 export async function GET(_: NextRequest) {
   console.log("🔍 /api/auth/me - Iniciando verificação de sessão")
+  
+  const client = await pool.connect();
   
   try {
     const cookieStore = await cookies()
@@ -26,24 +38,21 @@ export async function GET(_: NextRequest) {
       return NextResponse.json({ message: "Invalid session" }, { status: 401 })
     }
 
-    console.log("🔍 Buscando usuário no Supabase, UID:", payload.uid)
-    const supabase = createServerSupabaseClient()
-    const { data: user, error } = await supabase
-      .from("users")
-      .select("uid, nome, email, perfis, criado_em, atualizado_em, url_foto")
-      .eq("uid", payload.uid)
-      .single()
+    console.log("🔍 Buscando usuário no PostgreSQL, UID:", payload.uid)
+    const userQuery = `
+      SELECT uid, nome, email, perfis, criado_em, atualizado_em, url_foto 
+      FROM rarcursos.users 
+      WHERE uid = $1
+    `;
     
-    if (error) {
-      console.log("❌ Erro do Supabase:", error.message)
-      return NextResponse.json({ message: "Database error: " + error.message }, { status: 500 })
-    }
+    const result = await client.query(userQuery, [payload.uid]);
     
-    if (!user) {
+    if (result.rows.length === 0) {
       console.log("❌ Usuário não encontrado")
       return NextResponse.json({ message: "User not found" }, { status: 404 })
     }
     
+    const user = result.rows[0];
     console.log("✅ Usuário encontrado:", user.email)
     return NextResponse.json({ user })
     
@@ -53,5 +62,7 @@ export async function GET(_: NextRequest) {
       message: "Internal server error",
       error: error instanceof Error ? error.message : "Unknown error"
     }, { status: 500 })
+  } finally {
+    client.release();
   }
 }
