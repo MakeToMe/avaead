@@ -1,9 +1,14 @@
 /**
- * Hook personalizado para gerenciar estado de upload com progresso
+ * Hook personalizado para gerenciar estado de upload com progresso REAL
  */
 
 import { useState, useCallback, useRef } from 'react'
-import { uploadWithProgress, type UploadProgress } from '@/lib/upload-with-progress'
+import { 
+  uploadVideoWithRealProgress, 
+  uploadFileWithRealProgress, 
+  uploadImageWithRealProgress,
+  type RealUploadProgress 
+} from '@/lib/upload-with-real-progress'
 
 export interface UseUploadOptions {
   onSuccess?: (url: string) => void
@@ -12,7 +17,7 @@ export interface UseUploadOptions {
 
 export interface UseUploadReturn {
   isUploading: boolean
-  progress: UploadProgress | null
+  progress: RealUploadProgress | null
   error: string | null
   upload: (file: File, userId: string, type: 'video' | 'file') => Promise<string>
   reset: () => void
@@ -21,7 +26,7 @@ export interface UseUploadReturn {
 
 export function useUpload(options: UseUploadOptions = {}): UseUploadReturn {
   const [isUploading, setIsUploading] = useState(false)
-  const [progress, setProgress] = useState<UploadProgress | null>(null)
+  const [progress, setProgress] = useState<RealUploadProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   
   // Ref para controlar cancelamento
@@ -55,70 +60,26 @@ export function useUpload(options: UseUploadOptions = {}): UseUploadReturn {
       // Criar AbortController para cancelamento
       abortControllerRef.current = new AbortController()
 
-      // Simular progresso inicial
-      setProgress({
-        loaded: 0,
-        total: file.size,
-        percentage: 0,
-        speed: 0,
-        timeRemaining: 0,
-        stage: "Preparando upload..."
-      })
-
-      // Usar as actions existentes que já funcionam
-      const { uploadVideoMinio, uploadPdfMinio } = await import("../app/minhas-aulas/actions")
+      // Usar upload com progresso real
+      const uploadFunction = type === 'video' ? uploadVideoWithRealProgress : uploadFileWithRealProgress
       
-      // Simular progresso durante o upload
-      const progressInterval = setInterval(() => {
-        setProgress(prev => {
-          if (!prev || abortControllerRef.current?.signal.aborted) return prev
-          
-          const newPercentage = Math.min(prev.percentage + Math.random() * 10, 95)
-          const newLoaded = (newPercentage / 100) * file.size
-          const speed = 1024 * 1024 * (0.5 + Math.random() * 2) // 0.5-2.5 MB/s
-          const remaining = (file.size - newLoaded) / speed
-          
-          return {
-            ...prev,
-            loaded: newLoaded,
-            percentage: Math.round(newPercentage * 10) / 10,
-            speed,
-            timeRemaining: remaining,
-            stage: newPercentage > 80 ? "Finalizando..." : "Enviando arquivo..."
-          }
-        })
-      }, 500)
-
-      // Fazer upload usando as actions existentes
-      const uploadResult = type === 'video' 
-        ? await uploadVideoMinio(file, userId)
-        : await uploadPdfMinio(file, userId)
-
-      // Limpar intervalo
-      clearInterval(progressInterval)
-
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.message || 'Erro no upload')
-      }
-
-      // Progresso final
-      setProgress({
-        loaded: file.size,
-        total: file.size,
-        percentage: 100,
-        speed: 0,
-        timeRemaining: 0,
-        stage: "Upload concluído!"
+      const url = await uploadFunction(file, userId, {
+        onProgress: (realProgress) => {
+          setProgress(realProgress)
+        },
+        onError: (error) => {
+          setError(error)
+          options.onError?.(error)
+        },
+        signal: abortControllerRef.current.signal
       })
 
-      // Aguardar um pouco para mostrar o 100%
-      await new Promise(resolve => setTimeout(resolve, 500))
-
+      // Upload concluído
       setIsUploading(false)
       setProgress(null)
-      options.onSuccess?.(uploadResult.url!)
+      options.onSuccess?.(url)
 
-      return uploadResult.url!
+      return url
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido no upload'

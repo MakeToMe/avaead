@@ -50,7 +50,12 @@ export default function AdministracaoPage() {
   const loadUsers = async () => {
     setLoading(true)
     try {
-      const result = await getAllUsers(currentPage, usersPerPage, search, currentUser?.email || "")
+      if (!currentUser?.uid) {
+        setUsers([])
+        setTotalUsers(0)
+        return
+      }
+      const result = await getAllUsers(currentPage, usersPerPage, search, currentUser.uid)
       setUsers(result.users)
       setTotalUsers(result.total)
     } catch (error) {
@@ -63,7 +68,7 @@ export default function AdministracaoPage() {
 
   useEffect(() => {
     loadUsers()
-  }, [currentPage, search])
+  }, [currentPage, search, currentUser?.uid])
 
   // Atualizar perfil do usuário
   const handleProfileChange = async (userId: string, newProfile: string) => {

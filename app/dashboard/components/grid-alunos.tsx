@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { getAlunos } from "../admin-actions"
 import { ModalAdicionarCurso } from "./modal-adicionar-curso"
 import type { User } from "@/lib/auth-client"
+import { getMinioClientFileUrl } from "@/lib/minio-config"
 
 interface Aluno {
   uid: string
@@ -17,6 +18,8 @@ interface Aluno {
   email_verificado?: boolean
   whatsapp?: string
   whatsapp_verificado?: boolean
+  url_foto?: string
+  photoUrl?: string
   cursos: Array<{ id: string; titulo: string; progresso?: number; data_matricula?: string }>
   primeira_matricula: string
 }
@@ -44,7 +47,21 @@ export function GridAlunos({ user }: GridAlunosProps) {
     try {
       setLoading(true)
       const result = await getAlunos(user.uid, user.perfis, currentPage, itemsPerPage, search)
-      setAlunos(result.alunos)
+      const alunosComFoto: Aluno[] = (result.alunos || []).map((a: any) => {
+        let photoUrl: string | undefined
+        const raw = (a.url_foto || "").trim()
+        if (raw) {
+          if (/^https?:\/\//i.test(raw)) {
+            photoUrl = raw
+          } else {
+            const rel = raw.startsWith('/') ? raw.slice(1) : raw
+            const safe = rel.replace(/\\/g, '/').replace(/\.{2}\//g, '')
+            photoUrl = getMinioClientFileUrl(safe)
+          }
+        }
+        return { ...a, photoUrl }
+      })
+      setAlunos(alunosComFoto)
       setTotalPages(Math.ceil(result.total / itemsPerPage))
     } catch (error) {
       console.error("Erro ao carregar alunos:", error)
@@ -153,8 +170,19 @@ export function GridAlunos({ user }: GridAlunosProps) {
                 >
                   {/* Perfil - Avatar */}
                   <div className="col-span-1 flex items-center">
-                    <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">
-                      {getInitials(aluno.nome)}
+                    <div className="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white font-semibold text-sm">
+                      {aluno.photoUrl ? (
+                        <img
+                          src={aluno.photoUrl}
+                          alt={aluno.nome}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none'
+                          }}
+                        />
+                      ) : (
+                        getInitials(aluno.nome)
+                      )}
                     </div>
                   </div>
 

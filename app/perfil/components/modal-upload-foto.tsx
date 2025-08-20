@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { motion, AnimatePresence } from "framer-motion"
 import { Upload, X, Camera, Loader2 } from "lucide-react"
 import { uploadProfilePhoto } from "../actions"
+import { useToast } from "@/hooks/use-toast"
 
 interface ModalUploadFotoProps {
   isOpen: boolean
@@ -22,17 +23,26 @@ export default function ModalUploadFoto({ isOpen, onClose, userId, onSuccess }: 
   const [preview, setPreview] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
+  const { toast } = useToast()
 
   const handleFileSelect = (file: File) => {
     // Validar tipo de arquivo
     if (!file.type.startsWith("image/")) {
-      alert("Por favor, selecione apenas arquivos de imagem.")
+      toast({
+        variant: "destructive",
+        title: "Arquivo inválido",
+        description: "Por favor, selecione apenas imagens (PNG, JPG, JPEG).",
+      })
       return
     }
 
     // Validar tamanho (máximo 5MB)
     if (file.size > 5 * 1024 * 1024) {
-      alert("A imagem deve ter no máximo 5MB.")
+      toast({
+        variant: "destructive",
+        title: "Imagem muito grande",
+        description: "A imagem deve ter no máximo 5MB.",
+      })
       return
     }
 
@@ -79,18 +89,37 @@ export default function ModalUploadFoto({ isOpen, onClose, userId, onSuccess }: 
 
     setIsUploading(true)
     try {
+      // Notificar início
+      const sizeMb = (selectedFile.size / 1024 / 1024).toFixed(2)
+      toast({
+        title: "📤 Iniciando upload...",
+        description: `Enviando imagem de ${sizeMb}MB`,
+      })
+
       const result = await uploadProfilePhoto(userId, selectedFile)
 
       if (result.success) {
         onSuccess(result.url!)
         handleClose()
-        alert("Foto do perfil atualizada com sucesso!")
+        toast({
+          variant: "success",
+          title: "✅ Foto atualizada!",
+          description: "Sua foto de perfil foi enviada com sucesso.",
+        })
       } else {
-        alert("Erro ao fazer upload: " + result.error)
+        toast({
+          variant: "destructive",
+          title: "Erro no upload",
+          description: result.error || "Não foi possível enviar a foto.",
+        })
       }
     } catch (error) {
       console.error("Erro no upload:", error)
-      alert("Erro ao fazer upload da foto.")
+      toast({
+        variant: "destructive",
+        title: "Erro inesperado",
+        description: "Ocorreu um erro ao enviar a foto.",
+      })
     } finally {
       setIsUploading(false)
     }
@@ -168,7 +197,7 @@ export default function ModalUploadFoto({ isOpen, onClose, userId, onSuccess }: 
                     }}
                     variant="outline"
                     size="sm"
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                    className="bg-slate-800/60 border-slate-600 text-slate-200 hover:bg-slate-700/80 hover:text-white"
                   >
                     Escolher outra foto
                   </Button>
@@ -204,7 +233,7 @@ export default function ModalUploadFoto({ isOpen, onClose, userId, onSuccess }: 
               <Button
                 onClick={handleClose}
                 variant="outline"
-                className="flex-1 border-slate-600 text-slate-300 hover:bg-slate-700"
+                className="flex-1 bg-slate-800/60 border-slate-600 text-slate-200 hover:bg-slate-700/80 hover:text-white"
                 disabled={isUploading}
               >
                 Cancelar

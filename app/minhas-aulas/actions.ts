@@ -328,9 +328,9 @@ async function atualizarDuracaoCurso(cursoId: string) {
 async function recalcularProgressoAlunos(cursoId: string) {
   const client = await pool.connect()
   try {
-    // Matriculas ativas do curso
+    // Matriculas do curso
     const matRes = await client.query(
-      `SELECT id, aluno_id FROM rarcursos.matriculas WHERE curso_id = $1 AND ativo = true`,
+      `SELECT id, aluno_id FROM rarcursos.matriculas WHERE curso_id = $1`,
       [cursoId],
     )
     const matriculas = matRes.rows || []

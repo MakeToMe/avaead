@@ -38,7 +38,7 @@ async function registrarAtividade(
   entidadeTipo: string,
   entidadeId: string,
   url: string,
-  metadados: any = {},
+  metadados: Record<string, unknown> = {},
 ) {
   try {
     console.log("=== REGISTRANDO ATIVIDADE ===")

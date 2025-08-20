@@ -105,6 +105,7 @@ export async function getAlunos(userId: string, userProfile: string, page = 1, l
         u.whatsapp,
         u.mail_valid,
         u.wpp_valid,
+        u.url_foto,
         c.id as curso_id,
         c.titulo as curso_titulo
       FROM rarcursos.matriculas m
@@ -154,6 +155,7 @@ export async function getAlunos(userId: string, userProfile: string, page = 1, l
           whatsapp: matricula.whatsapp,
           email_verificado: matricula.mail_valid,
           whatsapp_verificado: matricula.wpp_valid,
+          url_foto: matricula.url_foto,
           cursos: [],
           primeira_matricula: matricula.criado_em,
         })

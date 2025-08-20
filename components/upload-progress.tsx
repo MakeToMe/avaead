@@ -7,11 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { CheckCircle, Upload, AlertCircle, ArrowLeft } from 'lucide-react'
-import { formatSpeed, formatTimeRemaining, formatFileSize, type UploadProgress } from '@/lib/upload-with-progress'
+import { formatSpeed, formatTimeRemaining, formatFileSize, type RealUploadProgress } from '@/lib/upload-with-real-progress'
 
 export interface UploadProgressInlineProps {
   isUploading: boolean
-  progress: UploadProgress | null
+  progress: RealUploadProgress | null
   fileName: string
   error: string | null
 }
@@ -146,7 +146,7 @@ export function UploadSuccessCard({ aulaTitle, onVoltar }: UploadSuccessCardProp
  * Componente de progresso compacto para uso em outros lugares
  */
 export interface UploadProgressCompactProps {
-  progress: UploadProgress
+  progress: RealUploadProgress
   className?: string
 }
 
