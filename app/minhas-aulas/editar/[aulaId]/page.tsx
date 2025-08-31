@@ -158,6 +158,8 @@ export default function EditarAulaPage() {
     duracao_horas: "",
     duracao_minutos: "",
     ativo: true,
+    privada: false,
+    ao_vivo: false,
     media_url: "",
   })
 
@@ -210,6 +212,12 @@ export default function EditarAulaPage() {
   useEffect(() => {
     setModuloSelecionado(!!formData.modulo_id)
   }, [formData.modulo_id])
+
+  // Atualizar exibição de permissões quando toggles mudarem
+  useEffect(() => {
+    const deveExibir = Boolean(formData.privada || formData.ao_vivo)
+    setExibirPermissoes(deveExibir)
+  }, [formData.privada, formData.ao_vivo])
 
   // Verificar formatação quando seleção mudar
   useEffect(() => {
@@ -267,6 +275,8 @@ export default function EditarAulaPage() {
           duracao_horas: duracaoHoras,
           duracao_minutos: duracaoMinutos,
           ativo: aula.ativo,
+          privada: aula.privada || false,
+          ao_vivo: aula.ao_vivo || false,
         })
 
         // Se há arquivo, mostrar preview
@@ -724,6 +734,8 @@ export default function EditarAulaPage() {
         media_url: mediaUrl,
         duracao: duracaoTotal,
         ativo: formData.ativo,
+        privada: formData.privada,
+        ao_vivo: formData.ao_vivo,
       }
 
       
@@ -1300,6 +1312,34 @@ return (
                 <Switch
                   checked={formData.ativo}
                   onCheckedChange={(checked) => setFormData({ ...formData, ativo: checked })}
+                  disabled={!camposHabilitados}
+                  className="data-[state=checked]:bg-indigo-600 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Aula Privada */}
+              <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                <div>
+                  <Label className="text-slate-300 font-medium">Aula Privada</Label>
+                  <p className="text-slate-400 text-sm">Visível apenas para quem tiver permissão</p>
+                </div>
+                <Switch
+                  checked={formData.privada}
+                  onCheckedChange={(checked) => setFormData({ ...formData, privada: checked })}
+                  disabled={!camposHabilitados}
+                  className="data-[state=checked]:bg-indigo-600 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Aula Ao Vivo */}
+              <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                <div>
+                  <Label className="text-slate-300 font-medium">Aula Ao Vivo</Label>
+                  <p className="text-slate-400 text-sm">Marque se esta aula será transmitida ao vivo</p>
+                </div>
+                <Switch
+                  checked={formData.ao_vivo}
+                  onCheckedChange={(checked) => setFormData({ ...formData, ao_vivo: checked })}
                   disabled={!camposHabilitados}
                   className="data-[state=checked]:bg-indigo-600 disabled:opacity-50"
                 />
