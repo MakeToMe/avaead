@@ -5,7 +5,7 @@
 import React from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
+
 import { CheckCircle, Upload, AlertCircle, ArrowLeft } from 'lucide-react'
 import { formatSpeed, formatTimeRemaining, formatFileSize, type RealUploadProgress } from '@/lib/upload-with-real-progress'
 

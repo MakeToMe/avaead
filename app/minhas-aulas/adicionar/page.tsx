@@ -42,6 +42,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useUpload } from "@/hooks/use-upload"
 import { UploadProgressInline, UploadSuccessCard } from "@/components/upload-progress"
+import { SessionStatus, SessionStatusIcon } from "@/components/session-status"
 
 interface Curso {
   id: string
@@ -155,6 +156,22 @@ export default function AdicionarAulaPage() {
         variant: "destructive",
         title: "Erro no upload",
         description: error,
+      })
+    },
+    onSessionRenewed: (renewalTime) => {
+      console.log("🔄 Sessão renovada durante upload:", renewalTime)
+      toast({
+        variant: "default",
+        title: "🔄 Sessão renovada",
+        description: "Sua sessão foi renovada automaticamente durante o upload",
+      })
+    },
+    onSessionError: (error) => {
+      console.error("❌ Erro na sessão durante upload:", error)
+      toast({
+        variant: "destructive",
+        title: "⚠️ Problema na sessão",
+        description: `Erro na renovação da sessão: ${error}. O upload continuará, mas você pode precisar fazer login novamente.`,
       })
     }
   })
@@ -602,9 +619,12 @@ export default function AdicionarAulaPage() {
             Voltar para Minhas Aulas
           </Button>
 
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-blue-400 bg-clip-text text-transparent">
-            Adicionar Nova Aula
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-blue-400 bg-clip-text text-transparent">
+              Adicionar Nova Aula
+            </h1>
+            <SessionStatusIcon className="mt-1" />
+          </div>
           <p className="text-slate-400 mt-2">Crie uma nova aula para seus cursos</p>
         </div>
 
@@ -1127,6 +1147,14 @@ export default function AdicionarAulaPage() {
                   progress={upload.progress}
                   fileName={selectedFile.name}
                   error={upload.error}
+                />
+              )}
+
+              {/* Status da sessão durante upload */}
+              {upload.isUploading && (
+                <SessionStatus 
+                  className="mt-2"
+                  showDetails={true}
                 />
               )}
 
