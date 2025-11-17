@@ -1,6 +1,6 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { pool } from "@/lib/db-pool"
 import { createHash } from "crypto"
 
 export interface CertificadoData {
@@ -51,32 +51,20 @@ function gerarNumeroCertificado(): string {
 
 // Função para buscar certificado por ID (para visualização privada)
 export async function buscarCertificadoPorId(certificadoId: string, userId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
+    const query = `
+      SELECT 
+        id, numero_certificado, nome_aluno, titulo_curso, descricao_curso,
+        carga_horaria, data_inicio, data_conclusao, status, emitido_em,
+        hash_verificacao, curso_id, aluno_id, social_visibility
+      FROM rarcursos.certificados
+      WHERE id = $1 AND aluno_id = $2
+    `
+    const result = await client.query(query, [certificadoId, userId])
 
-    const { data: certificado, error } = await supabase
-      .from("certificados")
-      .select(`
-        id,
-        numero_certificado,
-        nome_aluno,
-        titulo_curso,
-        descricao_curso,
-        carga_horaria,
-        data_inicio,
-        data_conclusao,
-        status,
-        emitido_em,
-        hash_verificacao,
-        curso_id,
-        aluno_id,
-        social_visibility
-      `)
-      .eq("id", certificadoId)
-      .eq("aluno_id", userId) // Garantir que só o dono pode ver
-      .single()
-
-    if (error || !certificado) {
+    if (result.rows.length === 0) {
       return {
         success: false,
         message: "Certificado não encontrado ou sem permissão",
@@ -86,7 +74,7 @@ export async function buscarCertificadoPorId(certificadoId: string, userId: stri
 
     return {
       success: true,
-      data: certificado,
+      data: result.rows[0],
     }
   } catch (error) {
     console.error("Erro ao buscar certificado:", error)
@@ -95,25 +83,29 @@ export async function buscarCertificadoPorId(certificadoId: string, userId: stri
       message: "Erro interno do servidor",
       data: null,
     }
+  } finally {
+    client.release()
   }
 }
 
 // Função para verificar se o aluno pode receber certificado
 export async function verificarElegibilidadeCertificado(cursoId: string, alunoId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
-
     // Verificar se existe matrícula
-    const { data: matricula, error: matriculaError } = await supabase
-      .from("matriculas")
-      .select("id, progresso_percentual, status, data_matricula")
-      .eq("curso_id", cursoId)
-      .eq("aluno_id", alunoId)
-      .single()
+    const matriculaQuery = `
+      SELECT id, progresso_percentual, status, data_matricula 
+      FROM rarcursos.matriculas 
+      WHERE curso_id = $1 AND aluno_id = $2
+    `
+    const matriculaResult = await client.query(matriculaQuery, [cursoId, alunoId])
 
-    if (matriculaError || !matricula) {
+    if (matriculaResult.rows.length === 0) {
       return { elegivel: false, motivo: "Matrícula não encontrada" }
     }
+    
+    const matricula = matriculaResult.rows[0]
 
     // Verificar se o curso foi concluído (100%)
     if (matricula.progresso_percentual < 100) {
@@ -124,18 +116,18 @@ export async function verificarElegibilidadeCertificado(cursoId: string, alunoId
     }
 
     // Verificar se já existe certificado
-    const { data: certificadoExistente } = await supabase
-      .from("certificados")
-      .select("id, numero_certificado, status")
-      .eq("curso_id", cursoId)
-      .eq("aluno_id", alunoId)
-      .single()
+    const certificadoQuery = `
+      SELECT id, numero_certificado, status 
+      FROM rarcursos.certificados 
+      WHERE curso_id = $1 AND aluno_id = $2
+    `
+    const certificadoResult = await client.query(certificadoQuery, [cursoId, alunoId])
 
-    if (certificadoExistente) {
+    if (certificadoResult.rows.length > 0) {
       return {
         elegivel: false,
         motivo: "Certificado já emitido",
-        certificado_existente: certificadoExistente,
+        certificado_existente: certificadoResult.rows[0],
       }
     }
 
@@ -146,14 +138,16 @@ export async function verificarElegibilidadeCertificado(cursoId: string, alunoId
   } catch (error) {
     console.error("Erro ao verificar elegibilidade:", error)
     return { elegivel: false, motivo: "Erro interno do servidor" }
+  } finally {
+    client.release()
   }
 }
 
 // Função para emitir certificado
 export async function emitirCertificado(cursoId: string, alunoId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
-
     // Verificar elegibilidade
     const elegibilidade = await verificarElegibilidadeCertificado(cursoId, alunoId)
     if (!elegibilidade.elegivel) {
@@ -165,26 +159,22 @@ export async function emitirCertificado(cursoId: string, alunoId: string) {
     }
 
     // Buscar dados do aluno
-    const { data: aluno, error: alunoError } = await supabase
-      .from("users")
-      .select("nome, email")
-      .eq("uid", alunoId)
-      .single()
-
-    if (alunoError || !aluno) {
+    const alunoQuery = 'SELECT nome, email FROM rarcursos.users WHERE uid = $1'
+    const alunoResult = await client.query(alunoQuery, [alunoId])
+    
+    if (alunoResult.rows.length === 0) {
       return { success: false, message: "Dados do aluno não encontrados" }
     }
+    const aluno = alunoResult.rows[0]
 
     // Buscar dados do curso
-    const { data: curso, error: cursoError } = await supabase
-      .from("cursos")
-      .select("titulo, descricao, duracao_total, instrutor_id")
-      .eq("id", cursoId)
-      .single()
-
-    if (cursoError || !curso) {
+    const cursoQuery = 'SELECT titulo, descricao, duracao_total, instrutor_id FROM rarcursos.cursos WHERE id = $1'
+    const cursoResult = await client.query(cursoQuery, [cursoId])
+    
+    if (cursoResult.rows.length === 0) {
       return { success: false, message: "Dados do curso não encontrados" }
     }
+    const curso = cursoResult.rows[0]
 
     // Gerar número único do certificado
     const numeroCertificado = gerarNumeroCertificado()
@@ -193,46 +183,41 @@ export async function emitirCertificado(cursoId: string, alunoId: string) {
     const dataAtual = new Date().toISOString().split("T")[0]
     const hashVerificacao = gerarHashVerificacao(numeroCertificado, alunoId, cursoId, dataAtual)
 
-    // Preparar dados do certificado
-    const certificadoData = {
-      numero_certificado: numeroCertificado,
-      aluno_id: alunoId,
-      curso_id: cursoId,
-      instrutor_id: curso.instrutor_id,
-      nome_aluno: aluno.nome,
-      titulo_curso: curso.titulo,
-      descricao_curso: curso.descricao || "",
-      carga_horaria: curso.duracao_total || 0,
-      data_inicio: elegibilidade.matricula_data?.data_matricula || dataAtual,
-      data_conclusao: dataAtual,
-      hash_verificacao: hashVerificacao,
-      status: "ativo",
-    }
-
     // Inserir certificado no banco
-    const { data: certificado, error: insertError } = await supabase
-      .from("certificados")
-      .insert(certificadoData)
-      .select()
-      .single()
+    const insertQuery = `
+      INSERT INTO rarcursos.certificados (
+        numero_certificado, aluno_id, curso_id, instrutor_id, nome_aluno,
+        titulo_curso, descricao_curso, carga_horaria, data_inicio, data_conclusao,
+        hash_verificacao, status, emitido_em
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      RETURNING id, numero_certificado, hash_verificacao
+    `
+    
+    const insertResult = await client.query(insertQuery, [
+      numeroCertificado,
+      alunoId,
+      cursoId,
+      curso.instrutor_id,
+      aluno.nome,
+      curso.titulo,
+      curso.descricao || "",
+      curso.duracao_total || 0,
+      elegibilidade.matricula_data?.data_matricula || dataAtual,
+      dataAtual,
+      hashVerificacao,
+      "ativo"
+    ])
 
-    if (insertError) {
-      console.error("Erro ao inserir certificado:", insertError)
+    if (insertResult.rows.length === 0) {
+      console.error("Erro ao inserir certificado")
       return { success: false, message: "Erro ao salvar certificado" }
     }
+    
+    const certificado = insertResult.rows[0]
 
     // TODO: Gerar QR Code e PDF do certificado
     // const qrCodeUrl = await generateQRCode(hashVerificacao)
     // const pdfUrl = await generateCertificatePDF(certificado)
-
-    // Atualizar com URLs geradas
-    // await supabase
-    //   .from("certificados")
-    //   .update({
-    //     qr_code_url: qrCodeUrl,
-    //     url_certificado: pdfUrl
-    //   })
-    //   .eq("id", certificado.id)
 
     return {
       success: true,
@@ -246,41 +231,32 @@ export async function emitirCertificado(cursoId: string, alunoId: string) {
   } catch (error) {
     console.error("Erro ao emitir certificado:", error)
     return { success: false, message: "Erro interno do servidor" }
+  } finally {
+    client.release()
   }
 }
 
 // Função para buscar certificados do aluno
 export async function buscarCertificadosAluno(alunoId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
+    const query = `
+      SELECT 
+        id, numero_certificado, titulo_curso, descricao_curso, carga_horaria,
+        data_conclusao, status, emitido_em, url_certificado, hash_verificacao
+      FROM rarcursos.certificados
+      WHERE aluno_id = $1 AND status = $2
+      ORDER BY emitido_em DESC
+    `
+    const result = await client.query(query, [alunoId, 'ativo'])
 
-    const { data: certificados, error } = await supabase
-      .from("certificados")
-      .select(`
-        id,
-        numero_certificado,
-        titulo_curso,
-        descricao_curso,
-        carga_horaria,
-        data_conclusao,
-        status,
-        emitido_em,
-        url_certificado,
-        hash_verificacao
-      `)
-      .eq("aluno_id", alunoId)
-      .eq("status", "ativo")
-      .order("emitido_em", { ascending: false })
-
-    if (error) {
-      console.error("Erro ao buscar certificados:", error)
-      return { success: false, message: "Erro ao buscar certificados", data: [] }
-    }
-
-    return { success: true, data: certificados || [] }
+    return { success: true, data: result.rows }
   } catch (error) {
     console.error("Erro ao buscar certificados:", error)
     return { success: false, message: "Erro interno do servidor", data: [] }
+  } finally {
+    client.release()
   }
 }
 
@@ -290,29 +266,26 @@ export async function verificarCertificadoPublico(hash: string): Promise<{
   message: string
   certificado?: CertificadoPublico
 }> {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
+    const query = `
+      SELECT 
+        numero_certificado, nome_aluno, titulo_curso, data_conclusao,
+        carga_horaria, status, hash_verificacao
+      FROM rarcursos.certificados
+      WHERE hash_verificacao = $1
+    `
+    const result = await client.query(query, [hash])
 
-    const { data: certificado, error } = await supabase
-      .from("certificados")
-      .select(`
-        numero_certificado,
-        nome_aluno,
-        titulo_curso,
-        data_conclusao,
-        carga_horaria,
-        status,
-        hash_verificacao
-      `)
-      .eq("hash_verificacao", hash)
-      .single()
-
-    if (error || !certificado) {
+    if (result.rows.length === 0) {
       return {
         success: false,
         message: "Certificado não encontrado ou hash inválido",
       }
     }
+    
+    const certificado = result.rows[0]
 
     if (certificado.status !== "ativo") {
       return {
@@ -332,65 +305,60 @@ export async function verificarCertificadoPublico(hash: string): Promise<{
       success: false,
       message: "Erro interno do servidor",
     }
+  } finally {
+    client.release()
   }
 }
 
 // Função para buscar certificados emitidos pelo instrutor
 export async function buscarCertificadosInstrutor(instrutorId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
+    const query = `
+      SELECT 
+        id, numero_certificado, nome_aluno, titulo_curso,
+        data_conclusao, status, emitido_em
+      FROM rarcursos.certificados
+      WHERE instrutor_id = $1
+      ORDER BY emitido_em DESC
+    `
+    const result = await client.query(query, [instrutorId])
 
-    const { data: certificados, error } = await supabase
-      .from("certificados")
-      .select(`
-        id,
-        numero_certificado,
-        nome_aluno,
-        titulo_curso,
-        data_conclusao,
-        status,
-        emitido_em
-      `)
-      .eq("instrutor_id", instrutorId)
-      .order("emitido_em", { ascending: false })
-
-    if (error) {
-      console.error("Erro ao buscar certificados do instrutor:", error)
-      return { success: false, message: "Erro ao buscar certificados", data: [] }
-    }
-
-    return { success: true, data: certificados || [] }
+    return { success: true, data: result.rows }
   } catch (error) {
     console.error("Erro ao buscar certificados do instrutor:", error)
     return { success: false, message: "Erro interno do servidor", data: [] }
+  } finally {
+    client.release()
   }
 }
 
 // Função para revogar certificado (apenas admin/instrutor)
 export async function revogarCertificado(certificadoId: string, motivo: string, userId: string) {
+  const client = await pool.connect()
+  
   try {
-    const supabase = createServerSupabaseClient()
-
     // Verificar permissões do usuário
-    const { data: user, error: userError } = await supabase.from("users").select("perfis").eq("uid", userId).single()
+    const userQuery = 'SELECT perfis FROM rarcursos.users WHERE uid = $1'
+    const userResult = await client.query(userQuery, [userId])
 
-    if (userError || !user || (user.perfis !== "admin" && user.perfis !== "instrutor")) {
+    if (userResult.rows.length === 0) {
+      return { success: false, message: "Usuário não encontrado" }
+    }
+    
+    const user = userResult.rows[0]
+    if (user.perfis !== "admin" && user.perfis !== "instrutor") {
       return { success: false, message: "Sem permissão para revogar certificados" }
     }
 
     // Atualizar status do certificado
-    const { error: updateError } = await supabase
-      .from("certificados")
-      .update({
-        status: "revogado",
-        atualizado_em: new Date().toISOString(),
-      })
-      .eq("id", certificadoId)
-
-    if (updateError) {
-      console.error("Erro ao revogar certificado:", updateError)
-      return { success: false, message: "Erro ao revogar certificado" }
-    }
+    const updateQuery = `
+      UPDATE rarcursos.certificados 
+      SET status = $1, atualizado_em = NOW()
+      WHERE id = $2
+    `
+    await client.query(updateQuery, ['revogado', certificadoId])
 
     // TODO: Registrar log de revogação
     // await registrarLogRevogacao(certificadoId, userId, motivo)
@@ -399,5 +367,7 @@ export async function revogarCertificado(certificadoId: string, motivo: string, 
   } catch (error) {
     console.error("Erro ao revogar certificado:", error)
     return { success: false, message: "Erro interno do servidor" }
+  } finally {
+    client.release()
   }
 }

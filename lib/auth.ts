@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs"
 import { cookies } from "next/headers"
-import { createServerSupabaseClient } from "./supabase/server"
+import { pool } from "./db-pool"
 import { verifyJwt } from "./auth-jwt"
 
 export interface User {
@@ -76,12 +76,22 @@ export async function getCurrentUser(): Promise<User | null> {
     return null
   }
 
-  const supabase = createServerSupabaseClient()
-  const { data, error } = await supabase.from("users").select("*").eq("uid", userId).single()
-  if (error || !data) {
+  const client = await pool.connect()
+  try {
+    const query = 'SELECT * FROM rarcursos.users WHERE uid = $1'
+    const result = await client.query(query, [userId])
+    
+    if (result.rows.length === 0) {
+      return null
+    }
+    
+    return result.rows[0] as User
+  } catch (error) {
+    console.error('Error fetching user:', error)
     return null
+  } finally {
+    client.release()
   }
-  return data as User
 }
 
 // Função para fazer logout

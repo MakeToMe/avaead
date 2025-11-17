@@ -2,7 +2,10 @@
 
 import { signOut as authSignOut } from "@/app/auth/actions"
 
-export { authSignOut as signOut }
+// Re-export como função async para compatibilidade com "use server"
+export async function signOut() {
+  return await authSignOut()
+}
 
 // TODO: Converter para PostgreSQL - temporariamente desabilitado
 export async function getUserFreshData(userId: string) {

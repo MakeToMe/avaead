@@ -1,7 +1,7 @@
 import { Suspense } from "react"
 import { notFound, redirect } from "next/navigation"
 import { getCurrentUser } from "@/lib/auth"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { pool } from "@/lib/db-pool"
 import { buscarCertificadoPorId } from "../../actions"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -32,22 +32,25 @@ async function CertificadoContent({ id }: { id: string }) {
   const baseUrl = process.env.URL_BASE ?? process.env.NEXT_PUBLIC_SITE_URL ?? "https://saber365.app"
   const linkPublico = `${baseUrl}/certificado/${certificado.hash_verificacao}`
 
-    // Avatar do aluno
+  // Avatar do aluno
   let avatarUrl: string | undefined = undefined
   let socialLinks: Record<string,string> = {}
+  const client = await pool.connect()
   try {
-    const supabase = createServerSupabaseClient()
-    const { data: aluno } = await supabase
-      .from("users")
-      .select("url_foto, social_links")
-      .eq("uid", user.uid)
-      .single()
-    if (aluno?.url_foto) {
-      avatarUrl = aluno.url_foto.startsWith("http") ? aluno.url_foto : `/api/avatar/${encodeURIComponent(aluno.url_foto.replace(/^ead\//, ""))}`
-    socialLinks = aluno.social_links ?? {}
+    const alunoQuery = 'SELECT url_foto, social_links FROM rarcursos.users WHERE uid = $1'
+    const alunoResult = await client.query(alunoQuery, [user.uid])
+    
+    if (alunoResult.rows.length > 0) {
+      const aluno = alunoResult.rows[0]
+      if (aluno.url_foto) {
+        avatarUrl = aluno.url_foto.startsWith("http") ? aluno.url_foto : `/api/avatar/${encodeURIComponent(aluno.url_foto.replace(/^ead\//, ""))}`
+      }
+      socialLinks = aluno.social_links ?? {}
     }
   } catch (e) {
     // ignore
+  } finally {
+    client.release()
   }
 
   // Extrair ano e mês de emissão para LinkedIn
@@ -62,26 +65,31 @@ async function CertificadoContent({ id }: { id: string }) {
   let modulesCount = 0
   let aulasCount = 0
   let totalMinutes = 0
+  const client2 = await pool.connect()
   try {
-    const supabase = createServerSupabaseClient()
-    const { data: modulos } = await supabase
-      .from("modulos")
-      .select("id, titulo, ordem")
-      .eq("curso_id", certificado.curso_id)
-      .eq("ativo", true)
-      .order("ordem")
+    const modulosQuery = `
+      SELECT id, titulo, ordem 
+      FROM rarcursos.modulos 
+      WHERE curso_id = $1 AND ativo = true 
+      ORDER BY ordem
+    `
+    const modulosResult = await client2.query(modulosQuery, [certificado.curso_id])
+    const modulos = modulosResult.rows
 
-    if (modulos) {
+    if (modulos.length > 0) {
       modulesCount = modulos.length
       const moduloIds = modulos.map((m: any) => m.id)
-      const { data: aulas } = await supabase
-        .from("aulas")
-        .select("id, modulo_id, titulo, duracao")
-        .in("modulo_id", moduloIds)
-        .eq("ativo", true)
+      
+      const aulasQuery = `
+        SELECT id, modulo_id, titulo, duracao 
+        FROM rarcursos.aulas 
+        WHERE modulo_id = ANY($1) AND ativo = true
+      `
+      const aulasResult = await client2.query(aulasQuery, [moduloIds])
+      const aulas = aulasResult.rows
 
       const aulaMap: Record<string, any[]> = {}
-      if (aulas) {
+      if (aulas.length > 0) {
         aulasCount = aulas.length
         aulas.forEach((a: any) => {
           totalMinutes += a.duracao ?? 0
@@ -94,6 +102,8 @@ async function CertificadoContent({ id }: { id: string }) {
     }
   } catch (e) {
     // ignore erros de fetch
+  } finally {
+    client2.release()
   }
   const durationString = `${totalMinutes} minutos`
 

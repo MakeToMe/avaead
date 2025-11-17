@@ -1,6 +1,6 @@
 "use server";
 
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { pool } from "@/lib/db-pool";
 
 /**
  * Obtém o mapa de visibilidade das redes sociais de um certificado.
@@ -9,15 +9,19 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export async function getSocialVisibility(
   certId: string
 ): Promise<Record<string, boolean>> {
-  const supabase = createServerSupabaseClient();
-  const { data, error } = await supabase
-    .from("certificados")
-    .select("social_visibility")
-    .eq("id", certId)
-    .single();
-
-  if (error) throw new Error("Erro ao buscar visibilidade de redes sociais");
-  return (data?.social_visibility ?? {}) as Record<string, boolean>;
+  const client = await pool.connect();
+  try {
+    const query = 'SELECT social_visibility FROM rarcursos.certificados WHERE id = $1';
+    const result = await client.query(query, [certId]);
+    
+    if (result.rows.length === 0) {
+      throw new Error("Erro ao buscar visibilidade de redes sociais");
+    }
+    
+    return (result.rows[0].social_visibility ?? {}) as Record<string, boolean>;
+  } finally {
+    client.release();
+  }
 }
 
 interface ToggleParams {
@@ -34,25 +38,25 @@ export async function toggleSocialVisibility({
   key,
   visible,
 }: ToggleParams) {
-  const supabase = createServerSupabaseClient();
+  const client = await pool.connect();
+  try {
+    // Valor atual
+    const selectQuery = 'SELECT social_visibility FROM rarcursos.certificados WHERE id = $1';
+    const selectResult = await client.query(selectQuery, [certId]);
+    
+    if (selectResult.rows.length === 0) {
+      throw new Error("Falha ao buscar visibilidade atual");
+    }
 
-  // Valor atual
-  const { data, error: fetchErr } = await supabase
-    .from("certificados")
-    .select("social_visibility")
-    .eq("id", certId)
-    .single();
-  if (fetchErr) throw new Error("Falha ao buscar visibilidade atual");
+    const current = (selectResult.rows[0].social_visibility ?? {}) as Record<string, boolean>;
+    const newVis = { ...current, [key]: visible };
 
-  const current = (data?.social_visibility ?? {}) as Record<string, boolean>;
-  const newVis = { ...current, [key]: visible };
+    // Persistir
+    const updateQuery = 'UPDATE rarcursos.certificados SET social_visibility = $1 WHERE id = $2';
+    await client.query(updateQuery, [JSON.stringify(newVis), certId]);
 
-  // Persistir
-  const { error } = await supabase
-    .from("certificados")
-    .update({ social_visibility: newVis })
-    .eq("id", certId);
-  if (error) throw new Error("Não foi possível atualizar visibilidade");
-
-  return { success: true } as const;
+    return { success: true } as const;
+  } finally {
+    client.release();
+  }
 }
